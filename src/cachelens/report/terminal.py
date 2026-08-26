@@ -19,6 +19,9 @@ def render(rep: SessionReport, requests_per_day: float = 0.0, verbose: bool = Tr
     if rep.advisories:
         add(f"  structural advisories       {len(rep.advisories)}")
     add(f"  tokens rewritten needlessly {rep.total_lost_tokens:,}")
+    if rep.total_novel_tokens:
+        add(f"  new tokens billed as writes {rep.total_novel_tokens:,}"
+            f"  (never re-read; write premium only)")
     add(f"  wasted spend (this session) ${rep.total_wasted_usd:,.4f}")
     if requests_per_day:
         add(f"  projected                   ${rep.projected_monthly_usd(requests_per_day):,.2f}"
@@ -59,6 +62,10 @@ def render(rep: SessionReport, requests_per_day: float = 0.0, verbose: bool = Tr
             add(f"    {b.lost_tokens:,} tokens rewritten at {b.ttl} write rate "
                 f"= {mult:.0f}x what a cache read would have cost  "
                 f"(${b.wasted_usd:.4f} wasted)")
+        if b.novel_tokens:
+            premium = CACHE_WRITE_MULT.get(b.ttl, 1.25) - 1.0
+            add(f"    {b.novel_tokens:,} tokens are new this turn: no read was "
+                f"available, so marking them costs the {premium:.2f}x write premium")
         for c in interesting:
             add(f"    {SEV_MARK[c.severity]} {c.code}: {c.detail}")
             for e in c.evidence[:3]:

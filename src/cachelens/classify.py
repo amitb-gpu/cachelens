@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .cost import split_stale_novel
 from .model import Block
 from .prefix import Divergence
 
@@ -49,6 +50,48 @@ def _expand_to_lines(text: str, lo: int, hi: int, pad: int = 80) -> tuple[int, i
     return ls, le
 
 
+# Contested-middle size above which character diffing is abandoned for line
+# diffing. SequenceMatcher is quadratic in sequence length, so a block whose
+# middle genuinely differs -- a re-rendered DOM, a fresh repo map -- costs
+# tens of seconds at character granularity. Lines are ~50x coarser, and the
+# evidence is widened to line boundaries anyway, so nothing legible is lost.
+_CHAR_DIFF_BUDGET = 1200
+
+
+def _line_offsets(text: str) -> tuple[list[str], list[int]]:
+    """Split into lines (keeping ends) alongside each line's char offset."""
+    lines = text.splitlines(keepends=True)
+    offsets, pos = [], 0
+    for ln in lines:
+        offsets.append(pos)
+        pos += len(ln)
+    offsets.append(pos)
+    return lines, offsets
+
+
+def _opcode_regions(a_mid: str, b_mid: str) -> list[tuple[int, int, int, int]]:
+    """Changed (i1, i2, j1, j2) char spans of the contested middle.
+
+    Diffs by character while that is affordable, by line when it is not.
+    """
+    if max(len(a_mid), len(b_mid)) <= _CHAR_DIFF_BUDGET:
+        sm = difflib.SequenceMatcher(None, a_mid, b_mid, autojunk=False)
+        return [
+            (i1, i2, j1, j2)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes()
+            if tag != "equal"
+        ]
+
+    a_lines, a_off = _line_offsets(a_mid)
+    b_lines, b_off = _line_offsets(b_mid)
+    sm = difflib.SequenceMatcher(None, a_lines, b_lines, autojunk=False)
+    return [
+        (a_off[i1], a_off[i2], b_off[j1], b_off[j2])
+        for tag, i1, i2, j1, j2 in sm.get_opcodes()
+        if tag != "equal"
+    ]
+
+
 def _changed_spans(a: str, b: str, limit: int = 6, merge_gap: int = 60) -> list[str]:
     """The substrings that actually differ, widened to legible context.
 
@@ -67,11 +110,8 @@ def _changed_spans(a: str, b: str, limit: int = 6, merge_gap: int = 60) -> list[
         tail += 1
     a_mid, b_mid = a[head:len(a) - tail], b[head:len(b) - tail]
 
-    sm = difflib.SequenceMatcher(None, a_mid, b_mid, autojunk=False)
     regions: list[list[int]] = []
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            continue
+    for i1, i2, j1, j2 in _opcode_regions(a_mid, b_mid):
         i1, i2, j1, j2 = i1 + head, i2 + head, j1 + head, j2 + head
         if regions and i1 - regions[-1][1] <= merge_gap:
             regions[-1][1] = max(regions[-1][1], i2)
@@ -183,6 +223,41 @@ def classify(
                     spans,
                     "Expected for the growing tail of a conversation; suspicious in tools "
                     "or system, which should be stable for the whole session.",
+                )
+            )
+
+    # A breakpoint sitting on a block that is partly stable and partly rewritten
+    # every turn. No regex will catch this -- the tell is structural: the block
+    # carries a large unchanged region that gets re-written anyway because the
+    # breakpoint cannot split it. This is the shape real agent traffic takes when
+    # a whole conversation is rendered into one text block.
+    # Only as a fallback: when a named textual cause fired, MISPLACED_BREAKPOINT
+    # below already reports this same geometry, and saying it twice is noise.
+    if (
+        div.diverged
+        and not any(c.severity == "critical" for c in causes)
+        and _before_last_breakpoint(div.index, curr_blocks)
+    ):
+        stale, novel = split_stale_novel(a.raw, b.raw)
+        total = stale + novel
+        if total and stale >= 200 and stale / total >= 0.20:
+            where = (
+                f"The cache breakpoint sits directly on {b.label}, which changes every turn."
+                if b.is_breakpoint
+                else f"{b.label} changes every turn and sits inside the region covered by "
+                     f"the breakpoint at block {_last_bp(curr_blocks)}."
+            )
+            causes.append(
+                Cause(
+                    "BREAKPOINT_ON_VOLATILE_BLOCK",
+                    "high",
+                    f"{where} About {stale:,} of its ~{total:,} tokens are unchanged from "
+                    f"last turn ({stale / total:.0%}), but a block is cached whole, so they "
+                    "are re-written at the write rate instead of read at the read rate.",
+                    spans,
+                    suggestion="Split this block in two: put the stable part (task, "
+                    "instructions, accumulated history) in its own content part with the "
+                    "breakpoint on it, and leave the volatile part after it, unmarked.",
                 )
             )
 

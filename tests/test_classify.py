@@ -87,3 +87,61 @@ def test_growing_conversation_is_clean():
     rep = analyze_session([a, b])
     assert not rep.avoidable_breaks
     assert rep.total_wasted_usd == 0.0
+
+
+def _msg_req(i, body, ts=1000.0):
+    """One request whose single message block carries the cache breakpoint."""
+    from cachelens.ingest.anthropic import record_from_payload
+
+    return record_from_payload({
+        "session_id": "s", "request_id": f"r{i}", "ts": ts, "model": "claude-sonnet-4-5",
+        "tools": [],
+        "system": [{"type": "text", "text": "SYSTEM " * 400,
+                    "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": body, "cache_control": {"type": "ephemeral"}}
+        ]}],
+        "usage": {},
+    })
+
+
+def test_breakpoint_on_half_stable_block_is_flagged():
+    """The browser-use shape: history and live state share one cached block.
+
+    No timestamp or counter regex matches here -- the tell is purely
+    structural, so the rule must not depend on the text patterns.
+    """
+    from cachelens.analyze import analyze
+
+    history = "step notes and prior observations. " * 300
+    prev = history + "CURRENT PAGE ALPHA " * 200
+    curr = history + "CURRENT PAGE BETA " * 200
+    rep = analyze([_msg_req(0, prev, 1000.0), _msg_req(1, curr, 1010.0)])[0]
+    assert "BREAKPOINT_ON_VOLATILE_BLOCK" in codes(rep)
+    assert rep.avoidable_breaks
+
+
+def test_wholly_new_block_is_not_flagged_as_splittable():
+    """If nothing carried over, there is no stable part to split out."""
+    from cachelens.analyze import analyze
+
+    rep = analyze([
+        _msg_req(0, "alpha bravo charlie delta " * 300, 1000.0),
+        _msg_req(1, "zulu yankee xray whiskey " * 300, 1010.0),
+    ])[0]
+    assert "BREAKPOINT_ON_VOLATILE_BLOCK" not in codes(rep)
+
+
+def test_large_block_diff_stays_fast():
+    """Character diffing is quadratic; real DOM-sized blocks must not hang."""
+    import time
+    from cachelens.classify import _changed_spans
+
+    a = "\n".join(f"[{i}]<a href='/item/{i}'>Result {i} for the quarterly filing</a>"
+                  for i in range(1200))
+    b = "\n".join(f"[{i}]<a href='/item/{i + 1200}'>Result {i + 1200} for the quarterly filing</a>"
+                  for i in range(1200))
+    start = time.time()
+    spans = _changed_spans(a, b)
+    assert time.time() - start < 5.0
+    assert spans

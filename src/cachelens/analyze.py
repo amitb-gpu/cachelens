@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .classify import Cause, classify
-from .cost import estimate_tokens, min_cacheable, waste_for
+from .cost import estimate_tokens, min_cacheable, split_stale_novel, waste_for
 from .model import RequestRecord
 from .prefix import Divergence, cacheable_prefix_end, first_divergence
 
@@ -17,9 +17,14 @@ class Break:
     turn: int
     divergence: Divergence
     causes: list[Cause]
-    lost_tokens: int
+    lost_tokens: int      # stale bytes re-written; a read was available for these
     wasted_usd: float
     ttl: str
+    novel_tokens: int = 0  # new bytes inside the cached region; only the write premium
+
+    @property
+    def rewritten_tokens(self) -> int:
+        return self.lost_tokens + self.novel_tokens
 
     @property
     def worst_severity(self) -> str:
@@ -39,6 +44,7 @@ class SessionReport:
     reported_hit_rate: float = 0.0
     total_wasted_usd: float = 0.0
     total_lost_tokens: int = 0
+    total_novel_tokens: int = 0
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -97,12 +103,25 @@ def analyze_session(records: list[RequestRecord]) -> SessionReport:
 
         bp_end = cacheable_prefix_end(curr.blocks)
         lost = 0
+        novel = 0
         if div.diverged and bp_end >= div.index:
-            # Every block from the break to the end of the cached region had to
-            # be re-written when it could have been read.
-            lost = sum(
-                estimate_tokens(b.raw) for b in curr.blocks[div.index : bp_end + 1]
-            )
+            # Every block from the break to the end of the cached region is
+            # re-written. Split each one by what it could have cost instead:
+            # bytes carried over from last turn had a read available, bytes
+            # that are new this turn had, at best, ordinary input pricing.
+            for i in range(div.index, bp_end + 1):
+                blk = curr.blocks[i]
+                prev_blk = prev.blocks[i] if i < len(prev.blocks) else None
+                if prev_blk is None or prev_blk.level != blk.level:
+                    novel += estimate_tokens(blk.raw)
+                elif prev_blk.raw == blk.raw:
+                    # Unchanged block dragged into the rewrite by a break
+                    # above it -- the purest form of this waste.
+                    lost += estimate_tokens(blk.raw)
+                else:
+                    stale_t, novel_t = split_stale_novel(prev_blk.raw, blk.raw)
+                    lost += stale_t
+                    novel += novel_t
 
         prefix_tokens = sum(
             estimate_tokens(b.raw) for b in curr.blocks[: bp_end + 1]
@@ -119,14 +138,16 @@ def analyze_session(records: list[RequestRecord]) -> SessionReport:
                 )
             )
             lost = 0
+            novel = 0
 
         ttl = next((b.ttl for b in curr.blocks if b.is_breakpoint), "5m")
-        w = waste_for(lost, model, ttl)
+        w = waste_for(lost, model, ttl, novel)
         rep.breaks.append(
             Break(prev.request_id, curr.request_id, turn, div, causes, lost,
-                  w.wasted_usd, ttl)
+                  w.wasted_usd, ttl, novel)
         )
         rep.total_lost_tokens += lost
+        rep.total_novel_tokens += novel
         rep.total_wasted_usd += w.wasted_usd
 
     return rep

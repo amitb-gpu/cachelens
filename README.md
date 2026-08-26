@@ -63,6 +63,7 @@ Finding the stray timestamp is the hard part. That is what this does.
 | `SERIALIZATION_DRIFT` | Two requests are semantically identical but serialize differently (unstable dict ordering) |
 | `TOOL_REORDER` | Same tool set, different order. Tools sit at the front of the prefix, so this invalidates everything below |
 | `MISPLACED_BREAKPOINT` | Volatile bytes sit *inside* the region a breakpoint is meant to cache |
+| `BREAKPOINT_ON_VOLATILE_BLOCK` | A block that is part stable and part rewritten sits under a breakpoint. Blocks cache whole, so the stable half is re-written every turn. Structural: fires with no textual tell |
 | `TTL_EXPIRY` | The prefix was fine; the entry expired before reuse |
 | `BELOW_MIN_TOKENS` | The marked prefix is under the model's minimum cacheable length, so it was never cached at all |
 | `LOOKBACK_EXCEEDED` | More than 20 blocks after the last breakpoint, past the lookback window |
@@ -157,11 +158,29 @@ trace, it is consumed as an additional signal rather than replaced.
 - [x] Prefix reconstruction, divergence detection, byte-level attribution
 - [x] Rule-based root-cause classification with fix suggestions
 - [x] Cost model and CI gate
+- [x] Field study against real open-source agents (see `examples/real-agents/`)
 - [ ] HTML context map: per-turn bands colored read / write / uncached, hover diff
 - [ ] OpenAI and OTel GenAI (`gen_ai.usage.cache_read.input_tokens`) ingest
 - [ ] `cachelens proxy` — live mitmproxy capture, point any agent at it
 - [ ] GitHub Action + pytest plugin
 - [ ] Exact token counts via provider `count_tokens` endpoints
+
+## Field results
+
+Run against four open-source agents at pinned commits, driving each agent's own
+prompt-assembly code rather than a fixture:
+
+| agent | verdict |
+|---|---|
+| **browser-use** | Task, full history and live DOM share one block, with the only message-level breakpoint on it. **25-55% of the input bill** is recoverable by splitting that block in two |
+| **aider** | Mostly well behaved. The repo map is re-ranked every turn and sits mid-prefix, invalidating the history below it on 2 of 8 turns |
+| **gptme** | Clean. Zero prefix breaks in 9 turns |
+| **SWE-agent** | Clean. Zero prefix breaks in 7 turns |
+
+Traces, capture harnesses and the method's limits are in
+[`examples/real-agents/`](examples/real-agents/). Note that these captures never
+reached a provider, so `reported cache hit rate` reads 0.0%; every other figure
+is computed from the request bodies.
 
 ## Caveats
 

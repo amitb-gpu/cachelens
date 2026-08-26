@@ -9,6 +9,14 @@ So a broken prefix does not merely fail to save you money -- it costs you
 1.25x where you should have paid 0.10x. The waste multiple is 12.5x, and
 that is the number worth putting in a CI gate.
 
+Not every re-written byte was cacheable, though. Bytes that existed in the
+previous request could have been a 0.10x read, so their waste multiple is
+the full 12.5x. Bytes that are genuinely new this turn never had a cache
+entry to hit; the most they could have been is ordinary 1.00x input, so
+marking them cacheable costs only the 0.25x write premium. Charging both at
+12.5x overstates the bill on agents whose cached region is one big volatile
+block, which is exactly the shape real agent traffic tends to have.
+
 Rates are USD per million input tokens and are overridable from a config
 file; verify them against current provider pricing before quoting figures.
 """
@@ -26,6 +34,8 @@ DEFAULT_BASE_RATE = 3.00
 
 CACHE_READ_MULT = 0.10
 CACHE_WRITE_MULT = {"5m": 1.25, "1h": 2.00}
+# What uncached input costs: the best a genuinely-new byte could have done.
+CACHE_MISS_MULT = 1.00
 
 # Minimum prompt length below which nothing is cached at all.
 MIN_CACHEABLE_TOKENS: dict[str, int] = {
@@ -64,23 +74,50 @@ def estimate_tokens(text: str) -> int:
     Swap in the provider's count_tokens endpoint for exact figures; the
     analysis is unchanged, only the precision of the dollar column.
     """
-    return max(1, round(len(text) / 3.6))
+    return tokens_from_chars(len(text))
+
+
+def tokens_from_chars(n_chars: int) -> int:
+    """Same heuristic, for when only a character count is in hand."""
+    return max(0, round(n_chars / 3.6))
 
 
 @dataclass
 class Waste:
+    """Cost of one break, split by what the bytes could have cost instead.
+
+    ``lost_tokens`` are stale: they were in the previous request, so a
+    correctly-placed breakpoint would have made them a 0.10x read.
+    ``novel_tokens`` are new this turn; their best case was 1.00x input,
+    so all they lose is the write premium.
+    """
+
     lost_tokens: int
     ttl: str
     base_usd_per_mtok: float
+    novel_tokens: int = 0
+
+    @property
+    def write_mult(self) -> float:
+        return CACHE_WRITE_MULT.get(self.ttl, 1.25)
+
+    @property
+    def rewritten_tokens(self) -> int:
+        return self.lost_tokens + self.novel_tokens
 
     @property
     def paid_usd(self) -> float:
-        mult = CACHE_WRITE_MULT.get(self.ttl, 1.25)
-        return self.lost_tokens / 1_000_000 * self.base_usd_per_mtok * mult
+        return (
+            self.rewritten_tokens / 1_000_000 * self.base_usd_per_mtok * self.write_mult
+        )
 
     @property
     def ideal_usd(self) -> float:
-        return self.lost_tokens / 1_000_000 * self.base_usd_per_mtok * CACHE_READ_MULT
+        best = (
+            self.lost_tokens * CACHE_READ_MULT
+            + self.novel_tokens * CACHE_MISS_MULT
+        )
+        return best / 1_000_000 * self.base_usd_per_mtok
 
     @property
     def wasted_usd(self) -> float:
@@ -91,5 +128,28 @@ class Waste:
         return self.paid_usd / self.ideal_usd if self.ideal_usd else 0.0
 
 
-def waste_for(lost_tokens: int, model: str, ttl: str = "5m") -> Waste:
-    return Waste(lost_tokens, ttl or "5m", base_rate(model))
+def waste_for(
+    lost_tokens: int, model: str, ttl: str = "5m", novel_tokens: int = 0
+) -> Waste:
+    return Waste(lost_tokens, ttl or "5m", base_rate(model), novel_tokens)
+
+
+def split_stale_novel(prev_raw: str, curr_raw: str) -> tuple[int, int]:
+    """Split a changed block into (stale, novel) token counts.
+
+    A block that changes at all is re-written whole, so its unchanged bytes
+    are still billed at the write rate. They are recoverable, though: split
+    the block at the boundary and the stable side becomes a readable prefix.
+    Matching a common prefix and suffix is enough to find that boundary, and
+    is far cheaper than a full diff on prompt-sized strings.
+    """
+    n = min(len(prev_raw), len(curr_raw))
+    pre = 0
+    while pre < n and prev_raw[pre] == curr_raw[pre]:
+        pre += 1
+    suf = 0
+    limit = n - pre
+    while suf < limit and prev_raw[-1 - suf] == curr_raw[-1 - suf]:
+        suf += 1
+    stale_chars = min(pre + suf, len(curr_raw))
+    return tokens_from_chars(stale_chars), tokens_from_chars(len(curr_raw) - stale_chars)

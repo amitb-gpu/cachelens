@@ -35,9 +35,23 @@ def record_from_payload(payload: dict) -> RequestRecord:
     )
 
 
+def _read_text(path: Path) -> str:
+    """Read a trace, transparently handling gzip.
+
+    Captured agent traffic is mostly large, highly repetitive prompts, so it
+    compresses roughly 10:1. Reading .gz directly means a checked-in trace
+    does not have to be unpacked before it can be profiled.
+    """
+    if path.suffix == ".gz":
+        import gzip
+
+        return gzip.decompress(path.read_bytes()).decode("utf-8")
+    return path.read_text(encoding="utf-8")
+
+
 def load_jsonl(path: str | Path) -> list[RequestRecord]:
     records = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in _read_text(Path(path)).splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             records.append(record_from_payload(json.loads(line)))
