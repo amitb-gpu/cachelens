@@ -27,6 +27,11 @@ def render(rep: SessionReport, requests_per_day: float = 0.0, verbose: bool = Tr
         add(f"  projected                   ${rep.projected_monthly_usd(requests_per_day):,.2f}"
             f"/month at {requests_per_day:g} req/day")
     add("")
+    if rep.level_confidence:
+        add(f"  token counts: {rep.counter_name}")
+        for lvl, c in rep.level_confidence.items():
+            add(f"    {lvl:<9} {c.label:>7}   {c.note}")
+        add("")
 
     if rep.cause_histogram:
         add("  root causes")

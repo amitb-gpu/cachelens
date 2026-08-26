@@ -166,17 +166,49 @@ def classify(
     joined = " ".join(spans)
 
     if _semantically_equal(a, b):
-        causes.append(
-            Cause(
-                "SERIALIZATION_DRIFT",
-                "critical",
-                f"{b.label} is semantically identical to the previous turn but serializes "
-                "differently. This is pure waste: nothing about the request actually changed.",
-                spans,
-                "Serialize with stable key ordering (json.dumps(..., sort_keys=True)) "
-                "before handing payloads to the SDK.",
+        if a.level == "tools":
+            # Two separate facts, and they do not travel together. The prefix
+            # hash is over the bytes you sent, so the cache really does miss.
+            # The bill is over the provider's own re-rendering of the schema,
+            # which is identical either way -- measured: the same tool set at
+            # 47,714 B compact and 81,800 B pretty-printed both count 14,781
+            # tokens. So this costs a full rewrite of unchanged content.
+            causes.append(
+                Cause(
+                    "SERIALIZATION_DRIFT",
+                    "critical",
+                    f"{b.label} serializes differently while describing the same tool. "
+                    "The prefix hash is taken over the bytes you sent, so the cache "
+                    "misses and every block below is re-written.",
+                    spans,
+                    "Serialize tool definitions with stable key ordering "
+                    "(json.dumps(..., sort_keys=True)) before handing them to the SDK.",
+                )
             )
-        )
+            causes.append(
+                Cause(
+                    "TOOL_TOKENS_UNCHANGED",
+                    "info",
+                    "Billed tokens for this block did not change: the provider "
+                    "re-renders tool schemas into its own format before tokenizing, "
+                    "so key order and whitespace cost nothing. The whole rewrite is "
+                    "therefore recoverable -- none of it is new content.",
+                    suggestion="Fix the ordering and this block returns to a cache "
+                    "read at no loss of information to the model.",
+                )
+            )
+        else:
+            causes.append(
+                Cause(
+                    "SERIALIZATION_DRIFT",
+                    "critical",
+                    f"{b.label} is semantically identical to the previous turn but serializes "
+                    "differently. This is pure waste: nothing about the request actually changed.",
+                    spans,
+                    "Serialize with stable key ordering (json.dumps(..., sort_keys=True)) "
+                    "before handing payloads to the SDK.",
+                )
+            )
     elif a.level == "tools" and _tool_set_reordered(prev_blocks, curr_blocks):
         causes.append(
             Cause(

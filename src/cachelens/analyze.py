@@ -5,7 +5,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .classify import Cause, classify
-from .cost import estimate_tokens, min_cacheable, split_stale_novel, waste_for
+from .cost import min_cacheable, split_stale_novel, waste_for
+from .tokens import HeuristicCounter, TokenCounter
 from .model import RequestRecord
 from .prefix import Divergence, cacheable_prefix_end, first_divergence
 
@@ -42,6 +43,8 @@ class SessionReport:
     turns: int
     breaks: list[Break] = field(default_factory=list)
     reported_hit_rate: float = 0.0
+    counter_name: str = "heuristic"
+    level_confidence: dict = field(default_factory=dict)
     total_wasted_usd: float = 0.0
     total_lost_tokens: int = 0
     total_novel_tokens: int = 0
@@ -81,14 +84,24 @@ class SessionReport:
         return per_request * requests_per_day * 30.0
 
 
-def analyze_session(records: list[RequestRecord]) -> SessionReport:
+def analyze_session(
+    records: list[RequestRecord], counter: TokenCounter | None = None
+) -> SessionReport:
     if not records:
         raise ValueError("no records")
+
+    counter = counter or HeuristicCounter()
+    tok = lambda b: counter.count(b.raw, b.level)  # noqa: E731
 
     model = records[-1].model
     rep = SessionReport(
         session_id=records[0].session_id, model=model, turns=len(records)
     )
+    rep.counter_name = getattr(counter, "name", "heuristic")
+    rep.level_confidence = {
+        lvl: counter.confidence(lvl)
+        for lvl in sorted({b.level for r in records for b in r.blocks})
+    }
 
     read = sum(r.usage.cache_read_input_tokens for r in records)
     total = sum(r.usage.total_input for r in records)
@@ -113,18 +126,28 @@ def analyze_session(records: list[RequestRecord]) -> SessionReport:
                 blk = curr.blocks[i]
                 prev_blk = prev.blocks[i] if i < len(prev.blocks) else None
                 if prev_blk is None or prev_blk.level != blk.level:
-                    novel += estimate_tokens(blk.raw)
+                    novel += tok(blk)
+                elif (
+                    blk.level == "tools"
+                    and prev_blk.canonical == blk.canonical
+                ):
+                    # Byte-only drift in a tool schema. The provider re-renders
+                    # tools before tokenizing, so the billed content is
+                    # unchanged: this is entirely stale, never novel.
+                    lost += tok(blk)
                 elif prev_blk.raw == blk.raw:
                     # Unchanged block dragged into the rewrite by a break
                     # above it -- the purest form of this waste.
-                    lost += estimate_tokens(blk.raw)
+                    lost += tok(blk)
                 else:
-                    stale_t, novel_t = split_stale_novel(prev_blk.raw, blk.raw)
+                    stale_t, novel_t = split_stale_novel(
+                        prev_blk.raw, blk.raw, counter, blk.level
+                    )
                     lost += stale_t
                     novel += novel_t
 
         prefix_tokens = sum(
-            estimate_tokens(b.raw) for b in curr.blocks[: bp_end + 1]
+            tok(b) for b in curr.blocks[: bp_end + 1]
         ) if bp_end >= 0 else 0
         if bp_end >= 0 and prefix_tokens < floor:
             causes.append(
@@ -153,8 +176,13 @@ def analyze_session(records: list[RequestRecord]) -> SessionReport:
     return rep
 
 
-def analyze(records: list[RequestRecord]) -> list[SessionReport]:
+def analyze(
+    records: list[RequestRecord], counter: TokenCounter | None = None
+) -> list[SessionReport]:
     sessions: dict[str, list[RequestRecord]] = defaultdict(list)
     for r in records:
         sessions[r.session_id].append(r)
-    return [analyze_session(sorted(v, key=lambda r: r.ts)) for v in sessions.values()]
+    return [
+        analyze_session(sorted(v, key=lambda r: r.ts), counter)
+        for v in sessions.values()
+    ]

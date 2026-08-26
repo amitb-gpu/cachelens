@@ -66,6 +66,7 @@ Finding the stray timestamp is the hard part. That is what this does.
 | `TOOL_REORDER` | Same tool set, different order. Tools sit at the front of the prefix, so this invalidates everything below |
 | `MISPLACED_BREAKPOINT` | Volatile bytes sit *inside* the region a breakpoint is meant to cache |
 | `BREAKPOINT_ON_VOLATILE_BLOCK` | A block that is part stable and part rewritten sits under a breakpoint. Blocks cache whole, so the stable half is re-written every turn. Structural: fires with no textual tell |
+| `TOOL_TOKENS_UNCHANGED` | Companion to `SERIALIZATION_DRIFT` on tools: the cache missed, but the provider re-renders schemas before tokenizing, so the billed content never changed and the whole rewrite is recoverable |
 | `TTL_EXPIRY` | The prefix was fine; the entry expired before reuse |
 | `BELOW_MIN_TOKENS` | The marked prefix is under the model's minimum cacheable length, so it was never cached at all |
 | `LOOKBACK_EXCEEDED` | More than 20 blocks after the last breakpoint, past the lookback window |
@@ -90,7 +91,19 @@ cachelens trace.jsonl --json
 
 # gate it in CI
 cachelens trace.jsonl --fail-on critical --max-wasted-usd 0.05
+
+# exact token counts instead of the byte heuristic (free endpoint, needs a key)
+ANTHROPIC_API_KEY=sk-ant-... cachelens trace.jsonl --exact-tokens
+
+# strip a trace to its shape so it can be shared in an issue
+cachelens redact trace.jsonl -o trace.shape.jsonl.gz
 ```
+
+`redact` keeps block boundaries, byte lengths, `cache_control` placement and the
+real `usage` fields, and replaces every prompt string with same-length filler
+derived from a hash of the original. Token totals reproduce within ~0.1% and
+structural findings are unchanged; the textual rules have nothing left to match,
+and a finding sitting exactly on a threshold can flip.
 
 Input is JSONL, one captured request per line:
 
@@ -162,10 +175,12 @@ trace, it is consumed as an additional signal rather than replaced.
 - [x] Cost model and CI gate
 - [x] Field study against real open-source agents (see `examples/real-agents/`)
 - [ ] HTML context map: per-turn bands colored read / write / uncached, hover diff
-- [ ] OpenAI and OTel GenAI (`gen_ai.usage.cache_read.input_tokens`) ingest
-- [ ] `cachelens proxy` — live mitmproxy capture, point any agent at it
+- [x] `cachelens redact` — share a trace's shape without its prompts
+- [~] Exact token counts via provider `count_tokens` (done for Anthropic via
+      `--exact-tokens`; per-level confidence reported when falling back)
+- [ ] `cachelens proxy` — live capture as a first-class command
+- [ ] OpenAI and OTel GenAI ingest
 - [ ] GitHub Action + pytest plugin
-- [ ] Exact token counts via provider `count_tokens` endpoints
 
 ## Field results
 
@@ -174,22 +189,146 @@ prompt-assembly code rather than a fixture:
 
 | agent | verdict |
 |---|---|
-| **browser-use** | Task, full history and live DOM share one block, with the only message-level breakpoint on it. **25-55% of the input bill** is recoverable by splitting that block in two |
+| **browser-use** | Task, full history and live DOM share one block, with the only message-level breakpoint on it. **23-51% of the input bill** is recoverable by splitting that block in two |
 | **aider** | Mostly well behaved. The repo map is re-ranked every turn and sits mid-prefix, invalidating the history below it on 2 of 8 turns |
 | **gptme** | Clean. Zero prefix breaks in 9 turns |
 | **SWE-agent** | Clean. Zero prefix breaks in 7 turns |
 
+The browser-use range is measured with exact provider token counts, not the
+heuristic. An earlier revision of this table said 25-55%; counting the DOM
+blocks exactly moved every cell down by 1.7-4.8 points, because serialized DOM
+is far denser than the heuristic assumes and dense novel content recovers at
+only 0.25x where stale content recovers at 1.15x. See **Calibration**.
+
 Traces, capture harnesses and the method's limits are in
-[`examples/real-agents/`](examples/real-agents/). Note that these captures never
-reached a provider, so `reported cache hit rate` reads 0.0%; every other figure
-is computed from the request bodies.
+[`examples/real-agents/`](examples/real-agents/). Those four captures never
+reached a provider, so their `reported cache hit rate` reads 0.0%; every other
+figure is computed from the request bodies.
 
-## Caveats
+### openclaw: the bug class reproduced, with real usage
 
-Token counts use a byte-length heuristic and are a magnitude indicator, not a
-billing number; swap in a provider `count_tokens` call for exact figures. Rates
-in `cost.py` are configurable and should be verified against current pricing
-before you quote a number to anyone.
+[openclaw#75300](https://github.com/openclaw/openclaw/issues/75300) reports an
+Anthropic prefix busted every turn by volatile content sitting inside a
+`cache_control`-marked system block. It was closed as "already implemented" by
+a bot; the reporter rebutted twice with a mitmproxy intercept and was not
+answered. We captured live traffic from pre-fix **v2026.4.29** to settle it.
+
+**The defect reaches the wire.** openclaw marks where the split should happen
+with an `<!-- OPENCLAW_CACHE_BOUNDARY -->` sentinel, and its own payload policy
+splits there. The `pi-ai` harness bundled in 2026.4.29 builds its own Anthropic
+request and never consults the marker. In our capture the marker arrives at the
+provider *inside* the single `cache_control` block, at char 27,075 of 29,237 —
+with everything openclaw itself labels "Dynamic Project Context" sitting after
+it, inside the cached region. `pi-ai` is absent from 2026.5.28, which is why
+the bug goes away there.
+
+**Two sessions, and the difference between them is the whole point.**
+
+| session | volatile content changed? | reported hit rate | breaks |
+|---|---|---|---|
+| `..._live` | no | **97.0%** | 0 of 4 |
+| `..._heartbeat` | yes (`HEARTBEAT.md`, per turn) | **44.3%** | 3 of 3 |
+
+The first is a true negative: nothing below the boundary changed, so nothing
+broke, and reporting zero breaks is correct. The second changes `HEARTBEAT.md`
+between turns — which is that file's documented purpose — and the #75300
+signature appears immediately in the genuine `usage` counters:
+
+```
+cache_read  14,457   14,457   14,457     <- tools, correctly cached, never grows
+cache_write  9,686   10,322   10,964     <- system block, re-written every turn
+```
+
+Against the issue's published figures (read ~10,638 constant, write ~9,531
+every turn) the structure matches exactly: tools cached, system busted, write
+roughly constant regardless of conversation length.
+
+From the payload alone, cachelens located the break at `system[0]`, raised
+`BREAKPOINT_ON_VOLATILE_BLOCK`, and quoted the offending bytes — reporting that
+8,089 of ~8,098 tokens in the block were unchanged and re-written anyway. Its
+predicted rewrite lands within **-2.5%** of the real counters:
+
+| turn | predicted | real `cache_creation` | error |
+|---|---|---|---|
+| 1 | 9,407 | 9,686 | -2.9% |
+| 2 | 10,067 | 10,322 | -2.5% |
+| 3 | 10,733 | 10,964 | -2.1% |
+
+**What this is and is not.** It reproduces the *mechanism* of #75300 — the
+boundary marker ignored, volatile content inside the cached block — through a
+different trigger. The originally reported trigger was per-message
+`message_id`/`timestamp` on the **channel** path; we drove `agent --local` and
+triggered it through Dynamic Project Context instead. The reporter's exact
+scenario remains unreproduced by us. The defect they described is present.
+
+Both traces are committed redacted (see below).
+
+## Calibration
+
+Token accuracy is per-level and measured, not uniform. Against
+`/v1/messages/count_tokens` on real captured agent traffic:
+
+| level | content | chars/token | heuristic error |
+|---|---|---|---|
+| `system` | instruction prose | 3.599 | **-0.02%** |
+| `messages` | conversation prose | — | **+3.8%** |
+| `messages` | serialized DOM | 2.926 | **-18.7%** |
+| `tools` | JSON schemas | 3.220 | **-10.55%** |
+| full payload | mixed | — | **-6.53%** |
+
+The divisor in `cost.py` is 3.600, which is why prose lands within a rounding
+error and everything denser does not. Two structural effects sit inside the
+tools figure: a fixed **~496-token preamble** charged once whenever any tool is
+present, and content that the heuristic cannot see (below).
+
+`cachelens --exact-tokens` replaces the heuristic with provider counts (the
+endpoint bills nothing; it needs `ANTHROPIC_API_KEY`). Every report prints which
+counter produced its numbers and the confidence for each level.
+
+**Where the error lands matters.** It concentrates at the `tools` level, which
+is also the level that breaks least often — tools are stable across a session
+by construction. The bugs that actually cost money break at `system` or
+`messages` level, and those are the levels where the heuristic is measured
+rather than modelled. A -10.55% error on a block that never invalidates costs
+nothing.
+
+Rates in `cost.py` are configurable and should be verified against current
+pricing before you quote a number to anyone.
+
+## The provider does not tokenize the JSON you send
+
+Measured, and worth stating on its own because most people guess otherwise:
+
+```
+same 30 tool definitions, compact  47,714 bytes -> 14,781 tokens
+same 30 tool definitions, pretty   81,800 bytes -> 14,781 tokens
+```
+
+A 71% difference in wire bytes, byte-identical token count. The provider parses
+tool definitions and re-renders them into its own internal format before
+tokenizing, so whitespace and key order in your request body cost exactly
+nothing.
+
+Two consequences, which pull in opposite directions:
+
+- **Billing.** No choice of characters-per-token divisor can be correct for
+  tool definitions, because the bytes measured are not the object billed. This
+  is why the token counter is pluggable rather than tuned.
+- **Caching.** The prefix hash *is* taken over the bytes you sent. So
+  reordering keys in a tool schema invalidates the cache while changing the
+  bill not at all. `cachelens` reports these as two findings —
+  `SERIALIZATION_DRIFT` for the invalidation, `TOOL_TOKENS_UNCHANGED` to record
+  that the whole rewrite is recoverable content rather than new content.
+
+## Capturing your own traffic
+
+A recording proxy is the least invasive capture: point the agent's base URL at
+it and forward upstream. One trap, which produces a silently wrong trace rather
+than an error — if you pass the client's `Accept-Encoding` through, the provider
+may gzip the SSE stream, and a parser reading it as text finds no `message_start`
+event. The usage counters then come back as `0`, which looks like "caching is
+off" instead of "the capture is broken". Strip `Accept-Encoding` before
+forwarding, or decompress before parsing.
 
 ## License
 

@@ -27,6 +27,34 @@ cap is 40,000 characters). The finding does not depend on the page contents,
 only on the ratio of accumulated history to per-step state, which the
 sensitivity table in the writeup varies deliberately.
 
+## openclaw: a live capture, and a redacted one
+
+`traces/openclaw_2026-4-29_live.jsonl.gz` is different from the other four. It
+is a **real 5-turn session against the Anthropic API** from pre-fix openclaw
+v2026.4.29, so its `usage` fields are genuine rather than absent, and cachelens
+reports a real 97.0% hit rate from them.
+
+It is committed **redacted** (`cachelens redact`): block boundaries, byte
+lengths, `cache_control` placement and `usage` are intact, every prompt string
+is same-length filler. That avoids redistributing openclaw's system prompt and
+tool schemas, and strips the host name and filesystem paths the runtime section
+embeds. Tool names are kept so the report stays readable.
+
+There are two openclaw traces, and they are a matched pair:
+
+| trace | volatile content below the boundary | result |
+|---|---|---|
+| `openclaw_2026-4-29_live.jsonl.gz` | held static | 97.0% hit rate, 0 breaks |
+| `openclaw_2026-4-29_heartbeat.jsonl.gz` | `HEARTBEAT.md` rewritten each turn | 44.3%, 3 breaks of 3 |
+
+Same binary, same config, same code path. The only difference is whether
+anything below openclaw's cache boundary marker actually changed. The second
+carries the signature from
+[openclaw#75300](https://github.com/openclaw/openclaw/issues/75300):
+`cache_read` pinned at 14,457 while `cache_write` runs 9,686 / 10,322 / 10,964.
+See the top-level README for the full account, including what this does and
+does not reproduce.
+
 ## Pinned commits
 
 | agent | commit | date |
@@ -35,6 +63,7 @@ sensitivity table in the writeup varies deliberately.
 | browser-use | `50ad446` | 2026-08-25 |
 | gptme | `19e0351` | 2026-08-26 |
 | SWE-agent | `3ea751c` | 2026-07-16 |
+| openclaw | `a448042` (npm 2026.4.29) | 2026-04-29 |
 
 ## Reproducing
 

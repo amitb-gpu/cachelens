@@ -5,3 +5,6 @@ dist/
 build/
 .venv/
 examples/*.jsonl
+.env
+.env.*
+*.key

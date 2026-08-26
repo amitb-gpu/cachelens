@@ -145,3 +145,66 @@ def test_large_block_diff_stays_fast():
     spans = _changed_spans(a, b)
     assert time.time() - start < 5.0
     assert spans
+
+
+def _tools_req(i, tools, ts):
+    from cachelens.ingest.anthropic import record_from_payload
+
+    return record_from_payload({
+        "session_id": "s", "request_id": f"r{i}", "ts": ts,
+        "model": "claude-sonnet-4-5",
+        "tools": tools,
+        "system": [{"type": "text", "text": "SYSTEM PROMPT LINE " * 500,
+                    "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": "go"}],
+        "usage": {},
+    })
+
+
+def _reordered(tool):
+    """Same schema, keys emitted in the opposite order."""
+    return {k: tool[k] for k in reversed(list(tool))}
+
+
+def test_tool_key_reorder_breaks_cache_but_not_the_bill():
+    """The compact-vs-pretty result, as a regression test.
+
+    A 30-tool set at 47,714 B compact and 81,800 B pretty-printed both count
+    14,781 tokens: the provider re-renders tool schemas before tokenizing.
+    So reordering keys is a real cache-invalidation event and a non-event
+    for billed tokens, and the two must be reported separately.
+    """
+    from cachelens.analyze import analyze
+
+    tool = {"name": "search", "description": "Search the corpus " * 40,
+            "input_schema": {"type": "object",
+                             "properties": {"q": {"type": "string"}}}}
+    rep = analyze([
+        _tools_req(0, [dict(tool)], 1000.0),
+        _tools_req(1, [_reordered(tool)], 1010.0),
+    ])[0]
+    found = codes(rep)
+    assert "SERIALIZATION_DRIFT" in found      # the cache really did miss
+    assert "TOOL_TOKENS_UNCHANGED" in found    # the bill really did not change
+
+    brk = rep.actual_breaks[0]
+    assert brk.novel_tokens == 0, "re-rendered schema content is never new"
+    assert brk.lost_tokens > 0, "but it is still re-written, and that costs"
+
+
+def test_non_tool_serialization_drift_keeps_the_plain_wording():
+    """The carve-out is tools-only; system text really is tokenized as sent."""
+    from cachelens.ingest.anthropic import record_from_payload
+    from cachelens.analyze import analyze
+
+    def req(i, text, ts):
+        return record_from_payload({
+            "session_id": "s", "request_id": f"r{i}", "ts": ts,
+            "model": "claude-sonnet-4-5", "tools": [],
+            "system": [{"type": "text", "text": text,
+                        "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": "go"}], "usage": {},
+        })
+
+    rep = analyze([req(0, "A " * 900, 1000.0), req(1, "B " * 900, 1010.0)])[0]
+    assert "TOOL_TOKENS_UNCHANGED" not in codes(rep)

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .tokens import CHARS_PER_TOKEN, HeuristicCounter, TokenCounter
+
 BASE_INPUT_USD_PER_MTOK: dict[str, float] = {
     "claude-opus-5": 5.00,
     "claude-sonnet-4-6": 3.00,
@@ -68,18 +70,22 @@ def min_cacheable(model: str) -> int:
     return MIN_CACHEABLE_TOKENS.get(_norm(model), DEFAULT_MIN_CACHEABLE)
 
 
-def estimate_tokens(text: str) -> int:
-    """Byte-length heuristic. Magnitude indicator, not a billing number.
+_DEFAULT_COUNTER = HeuristicCounter()
 
-    Swap in the provider's count_tokens endpoint for exact figures; the
-    analysis is unchanged, only the precision of the dollar column.
+
+def estimate_tokens(text: str) -> int:
+    """Byte-length heuristic, kept for callers that want no counter.
+
+    Accuracy is per-level and measured, not uniform: see
+    ``tokens.HEURISTIC_CONFIDENCE``. Pass an ExactCounter through
+    ``analyze`` for provider-backed figures.
     """
-    return tokens_from_chars(len(text))
+    return _DEFAULT_COUNTER.count(text)
 
 
 def tokens_from_chars(n_chars: int) -> int:
     """Same heuristic, for when only a character count is in hand."""
-    return max(0, round(n_chars / 3.6))
+    return _DEFAULT_COUNTER.from_chars(n_chars)
 
 
 @dataclass
@@ -134,13 +140,10 @@ def waste_for(
     return Waste(lost_tokens, ttl or "5m", base_rate(model), novel_tokens)
 
 
-def split_stale_novel(prev_raw: str, curr_raw: str) -> tuple[int, int]:
-    """Split a changed block into (stale, novel) token counts.
+def stale_char_span(prev_raw: str, curr_raw: str) -> int:
+    """Characters of ``curr_raw`` carried over unchanged from ``prev_raw``.
 
-    A block that changes at all is re-written whole, so its unchanged bytes
-    are still billed at the write rate. They are recoverable, though: split
-    the block at the boundary and the stable side becomes a readable prefix.
-    Matching a common prefix and suffix is enough to find that boundary, and
+    Matching a common prefix and suffix is enough to find the boundary, and
     is far cheaper than a full diff on prompt-sized strings.
     """
     n = min(len(prev_raw), len(curr_raw))
@@ -151,5 +154,31 @@ def split_stale_novel(prev_raw: str, curr_raw: str) -> tuple[int, int]:
     limit = n - pre
     while suf < limit and prev_raw[-1 - suf] == curr_raw[-1 - suf]:
         suf += 1
-    stale_chars = min(pre + suf, len(curr_raw))
-    return tokens_from_chars(stale_chars), tokens_from_chars(len(curr_raw) - stale_chars)
+    return min(pre + suf, len(curr_raw))
+
+
+def split_stale_novel(
+    prev_raw: str,
+    curr_raw: str,
+    counter: TokenCounter | None = None,
+    level: str = "messages",
+) -> tuple[int, int]:
+    """Split a changed block into (stale, novel) token counts.
+
+    A block that changes at all is re-written whole, so its unchanged bytes
+    are still billed at the write rate. They are recoverable, though: split
+    the block at the boundary and the stable side becomes a readable prefix.
+
+    With an exact counter the block total is counted for real and then
+    apportioned by the character split, since the provider counts whole
+    blocks and the stale region is not contiguous.
+    """
+    stale_chars = stale_char_span(prev_raw, curr_raw)
+    if counter is None or isinstance(counter, HeuristicCounter):
+        c = counter or _DEFAULT_COUNTER
+        return c.from_chars(stale_chars), c.from_chars(len(curr_raw) - stale_chars)
+    total = counter.count(curr_raw, level)
+    if not curr_raw:
+        return 0, total
+    stale = round(total * stale_chars / len(curr_raw))
+    return stale, max(0, total - stale)
