@@ -1,5 +1,7 @@
 # cachelens
 
+[![ci](https://github.com/amitb-gpu/cachelens/actions/workflows/ci.yml/badge.svg)](https://github.com/amitb-gpu/cachelens/actions/workflows/ci.yml)
+
 **A profiler for LLM prompt-cache economics.** Observability tools tell you your
 cache hit rate. `cachelens` tells you *which bytes broke the prefix, what that
 cost, and what to change.*
