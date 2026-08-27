@@ -38,6 +38,9 @@ than quietly edited.
   prefix and therefore the stale/novel split inside a block.
 - `--exact-tokens` — count via the provider's `count_tokens` endpoint instead
   of the byte heuristic. The endpoint bills nothing but needs an API key.
+  Strictly opt-in: a key present in the environment never changes what a run
+  does, so the CI gate stays offline and green for forks that happen to export
+  one. Asserted by the workflow and by two tests.
 - Pluggable token counting (`cachelens.tokens`), with per-level confidence
   reported in every run instead of one global caveat.
 - `BREAKPOINT_ON_VOLATILE_BLOCK` — structural rule for a breakpoint sitting on
@@ -50,6 +53,14 @@ than quietly edited.
   openclaw captures with genuine `usage`. See README "Field results".
 
 ### Fixed
+
+- `get_counter()` selected the exact counter whenever `ANTHROPIC_API_KEY` was
+  set, making network use implicit rather than opt-in. A plain `cachelens`
+  invocation in a fork's CI would have started making live calls.
+- Redaction fidelity is now a test rather than a thing someone noticed. The
+  first redactor was out by 2.3x on stale tokens (81,941 reported as 192,427)
+  and nothing failed; the guard asserts agreement within 0.5% on the
+  browser-use trace, and pins the threshold-flip caveat alongside it.
 
 - **Line-level diffing above a 1,200-character contested region.**
   `SequenceMatcher` is quadratic, and the existing head/tail peel only helps

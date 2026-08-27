@@ -52,3 +52,57 @@ def test_split_stale_novel_finds_the_stable_shoulders():
     stale, novel = split_stale_novel(prev, curr)
     assert novel <= tokens_from_chars(len("volatile-2")) + 1
     assert stale > 500
+
+
+def test_exact_token_counting_is_strictly_opt_in(monkeypatch):
+    """A key in the environment must never make a run go to the network.
+
+    CI is the reason this is strict rather than convenient. A fork whose
+    environment exports ANTHROPIC_API_KEY for unrelated purposes would
+    otherwise turn a plain `cachelens trace.jsonl` in its pipeline into a
+    live-call run: slower, rate-limitable, and red for a reason that appears
+    nowhere in the command line. Only --exact-tokens opts in.
+    """
+    from cachelens.tokens import ExactCounter, HeuristicCounter, get_counter
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+    assert isinstance(get_counter(), HeuristicCounter)
+    assert isinstance(get_counter(None), HeuristicCounter)
+    assert isinstance(get_counter(False), HeuristicCounter)
+    assert isinstance(get_counter(True), ExactCounter)
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert isinstance(get_counter(True), HeuristicCounter), \
+        "explicit --exact-tokens without a key degrades, it does not raise"
+
+
+def test_cli_default_path_makes_no_network_call(monkeypatch, tmp_path, capsys):
+    """The CI gate must run offline even with a key present."""
+    import json
+    import urllib.request
+
+    from cachelens.cli import main
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+
+    def explode(*a, **k):
+        raise AssertionError("cachelens reached the network on its default path")
+
+    monkeypatch.setattr(urllib.request, "urlopen", explode)
+
+    asks = ["what does this module do", "explain the rule ordering",
+            "summarize the pipeline"]
+    trace = tmp_path / "t.jsonl"
+    with trace.open("w") as f:
+        for i, ask in enumerate(asks):
+            f.write(json.dumps({
+                "session_id": "s", "request_id": f"r{i}", "ts": 1000.0 + i * 10,
+                "model": "claude-sonnet-4-5", "tools": [],
+                "system": [{"type": "text", "text": "STABLE SYSTEM PROMPT " * 400,
+                            "cache_control": {"type": "ephemeral"}}],
+                "messages": [{"role": "user", "content": ask}],
+                "usage": {},
+            }) + "\n")
+
+    assert main([str(trace), "--fail-on", "critical"]) == 0
+    assert "token counts: heuristic" in capsys.readouterr().out

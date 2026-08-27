@@ -285,6 +285,13 @@ present, and content that the heuristic cannot see (below).
 endpoint bills nothing; it needs `ANTHROPIC_API_KEY`). Every report prints which
 counter produced its numbers and the confidence for each level.
 
+**Exact counting is strictly opt-in, and the CI gate never needs a key.** A key
+merely present in the environment does not change what a run does — only the
+flag does. That is deliberate: a fork whose CI exports `ANTHROPIC_API_KEY` for
+unrelated reasons would otherwise turn a plain `cachelens trace.jsonl` in its
+pipeline into a live-call run, and inherit a red badge for a reason that appears
+nowhere in the command line. The workflow asserts this.
+
 **Where the error lands matters.** It concentrates at the `tools` level, which
 is also the level that breaks least often — tools are stable across a session
 by construction. The bugs that actually cost money break at `system` or

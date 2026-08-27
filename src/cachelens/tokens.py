@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
@@ -150,8 +151,20 @@ class ExactCounter:
 
 
 def get_counter(exact: bool | None = None, model: str = "claude-sonnet-4-5") -> TokenCounter:
-    """Exact when a key is available and not refused, heuristic otherwise."""
+    """Heuristic unless exact counting is asked for explicitly.
+
+    Opt-in is deliberate and strict: a key merely *present* in the
+    environment must never turn a run into a network run. CI is the reason.
+    A fork whose environment happens to export ``ANTHROPIC_API_KEY`` would
+    otherwise start making live calls from a plain ``cachelens trace.jsonl``
+    in its pipeline -- slower, rate-limitable, and failing the build for a
+    reason nowhere in the command line.
+    """
+    if not exact:
+        return HeuristicCounter()
     key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if exact is False or (exact is None and not key) or (exact and not key):
+    if not key:
+        print("cachelens: --exact-tokens needs ANTHROPIC_API_KEY; "
+              "falling back to the byte heuristic", file=sys.stderr)
         return HeuristicCounter()
     return ExactCounter(key, model)

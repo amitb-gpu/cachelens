@@ -16,3 +16,21 @@ jobs:
       - run: pytest -q
       - name: cache regression gate (demo)
         run: cachelens examples/fixed.jsonl --fail-on critical
+
+      # Everything below runs with no ANTHROPIC_API_KEY in the environment,
+      # which is the point: the gate must never need one. --exact-tokens is
+      # strictly opt-in, and no step here passes it. A fork that happens to
+      # export a key in CI still gets the heuristic path and a green badge.
+      - name: gate runs offline on a real-agent trace
+        run: cachelens examples/real-agents/traces/gptme.jsonl.gz --fail-on critical
+
+      - name: redact round-trip stays analyzable
+        run: |
+          cachelens redact examples/real-agents/traces/gptme.jsonl.gz -o "$RUNNER_TEMP/shape.jsonl.gz"
+          cachelens "$RUNNER_TEMP/shape.jsonl.gz" --fail-on critical
+
+      - name: a stray key must not change the default path
+        env:
+          ANTHROPIC_API_KEY: sk-ant-not-a-real-key
+        run: |
+          cachelens examples/real-agents/traces/gptme.jsonl.gz | grep -q "token counts: heuristic"
