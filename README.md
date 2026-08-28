@@ -11,9 +11,15 @@ cachelens  session=agent-run-1  model=claude-sonnet-4-6  turns=12
 ==============================================================================
   reported cache hit rate      52.6%
   prefix breaks               11 of 11 turns  (11 avoidable)
-  tokens rewritten needlessly 48,147
-  wasted spend (this session) $0.2744
-  projected                   $22.45/month at 30 req/day
+  tokens rewritten needlessly 48,048
+  new tokens billed as writes 99  (never re-read; write premium only)
+  wasted spend (this session) $0.2742
+  projected                   $22.43/month at 30 req/day
+
+  token counts: heuristic
+    system     -0.02%   instruction prose; measured at 3.599 chars/token
+    messages  modelled   content-dependent: prose +3.8%, serialized DOM -18.7%
+    tools     modelled   re-rendered by the provider before tokenizing
 
   root causes
      11x  VOLATILE_TIMESTAMP
@@ -143,7 +149,7 @@ on every single turn.
 
 ```bash
 python examples/gen_fixtures.py
-cachelens examples/openclaw_repro.jsonl --req-per-day 30   # 52.6% hit rate, $22.45/mo wasted
+cachelens examples/openclaw_repro.jsonl --req-per-day 30   # 52.6% hit rate, $22.43/mo wasted
 cachelens examples/fixed.jsonl          --req-per-day 30   # 99.8% hit rate, $0.00
 ```
 
