@@ -2,50 +2,185 @@
 
 [![ci](https://github.com/amitb-gpu/cachelens/actions/workflows/ci.yml/badge.svg)](https://github.com/amitb-gpu/cachelens/actions/workflows/ci.yml)
 
-**A profiler for LLM prompt-cache economics.** Observability tools tell you your
-cache hit rate. `cachelens` tells you *which bytes broke the prefix, what that
-cost, and what to change.*
+**Find what broke your LLM prompt cache — and what it cost.**
 
+> **Observability tells you that your cache is missing. CacheLens tells you where
+> it broke, why it broke, what it cost, and how to fix it.**
+
+## What is CacheLens?
+
+**CacheLens is a profiler that finds wasted LLM prompt-cache spend.**
+
+It analyzes captured LLM requests turn by turn, finds where a reusable prompt
+prefix stopped matching, identifies the likely cause, calculates the wasted
+token cost, and recommends what to change.
+
+It is designed for a simple question that ordinary cache metrics do not answer:
+
+**What exactly broke my cache, and how much is that mistake costing me?**
+
+## What problem does it solve?
+
+LLM applications repeatedly send large amounts of identical context: system
+prompts, tool definitions, instructions, conversation history, repository
+context, and agent state. Prompt caching can make that repeated input much
+cheaper.
+
+But prompt caches are prefix-sensitive. **A tiny changing piece of a prompt can
+cause thousands of otherwise reusable tokens to be rewritten.** A timestamp,
+UUID, reordered tool schema, volatile DOM block, serialization change, or
+misplaced cache breakpoint can invalidate a large stable prefix.
+
+A hit-rate dashboard may tell you:
+
+```text
+cache hit rate: 52.6%
 ```
+
+That tells you the cache missed. It generally does not tell you **exactly what
+broke it, where the break occurred, whether it was avoidable, or what the
+mistake costs**.
+
+That is the problem CacheLens solves.
+
+## What does CacheLens give me?
+
+For each captured session, CacheLens gives you the things needed to act on a
+cache miss rather than merely observe it:
+
+- **the broken block and changed bytes** where the reusable prefix first diverged;
+- **the likely root cause**, such as a timestamp, UUID, serialization drift,
+  tool reordering, volatile block, or misplaced breakpoint;
+- **the wasted tokens**, separated into stable content that should have been a
+  cheap cache read and genuinely new content;
+- **the dollar impact** for the session and a projection at your request volume;
+- **a suggested fix** when the failure pattern is known;
+- **machine-readable output and CI thresholds** for catching regressions.
+
+The normal analysis is offline. It can run against live captures, historical
+traces, or redacted traces shared in an issue.
+
+## Who is it for?
+
+CacheLens is useful for:
+
+- **LLM infrastructure and inference engineers** reducing repeated-input cost;
+- **agent-framework developers** building long-running, tool-using agents;
+- **AI platform teams** operating Claude-backed applications at scale;
+- **inference / FinOps engineers** trying to attribute LLM input-cost waste;
+- **observability teams** that can see cache misses but need root-cause detail;
+- **open-source maintainers** who want prompt-cache regressions to be
+  reproducible and gateable in CI.
+
+If your application sends short, independent prompts with little reusable
+context, prompt-cache optimization may not materially affect your bill.
+
+## Does it actually find anything?
+
+**Yes.** CacheLens has been driven against the real prompt-assembly code of four
+open-source agents at pinned commits, plus live traffic from a pre-fix OpenClaw
+release.
+
+| agent | finding |
+|---|---|
+| **browser-use** | **23–51% of the input bill was recoverable** across measured session shapes by splitting stable history from volatile page state. |
+| **aider** | Mostly well behaved; repo-map re-ranking caused avoidable cache churn. |
+| **gptme** | Clean in the captured run: zero prefix breaks in 9 turns. |
+| **SWE-agent** | Clean in the captured run: zero prefix breaks in 7 turns. |
+| **OpenClaw** | Reproduced the mechanism of public issue #75300 against live API traffic with genuine provider `usage` counters. |
+
+For a representative 30-step browser-use session with ~13 KB page state,
+exact provider token counts put the as-is input cost at **$0.8678** and the
+split-block version at **$0.5289**: **39.1% recovered**. Across the measured
+session shapes, the recoverable range was **23–51%**.
+
+The clean gptme and SWE-agent runs matter too: when the prompt prefix remains
+stable, CacheLens stays quiet.
+
+Traces, capture harnesses, pinned commits, sensitivity results, and method limits
+are in [`examples/real-agents/`](examples/real-agents/).
+
+## Can I use it on my application?
+
+**Yes.** The MVP includes a built-in Anthropic-compatible capture proxy, so you
+can go from your own agent traffic to a CacheLens report in three commands.
+
+### Install
+
+```bash
+pip install -e ".[dev]"
+```
+
+### Capture and analyze
+
+```bash
+# 1. start the capture proxy
+cachelens proxy -o trace.jsonl
+
+# 2. point your agent at it and run the agent normally
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 <your agent command>
+
+# 3. profile the captured session
+cachelens trace.jsonl --req-per-day 30
+```
+
+The proxy needs **no credentials of its own**. The client's authorization header
+passes through, so the API key stays with the application being profiled.
+
+To capture request structure without forwarding requests to the provider or
+spending tokens:
+
+```bash
+cachelens proxy -o trace.jsonl --no-forward
+```
+
+A typical report identifies the break, prices it, and suggests a fix:
+
+```text
 cachelens  session=agent-run-1  model=claude-sonnet-4-6  turns=12
 ==============================================================================
   reported cache hit rate      52.6%
   prefix breaks               11 of 11 turns  (11 avoidable)
   tokens rewritten needlessly 48,048
-  new tokens billed as writes 99  (never re-read; write premium only)
+  new tokens billed as writes 99
   wasted spend (this session) $0.2742
   projected                   $22.43/month at 30 req/day
-
-  token counts: heuristic
-    system     -0.02%   instruction prose; measured at 3.599 chars/token
-    messages  modelled   content-dependent: prose +3.8%, serialized DOM -18.7%
-    tools     modelled   re-rendered by the provider before tokenizing
 
   root causes
      11x  VOLATILE_TIMESTAMP
      11x  MISPLACED_BREAKPOINT
       2x  LOOKBACK_EXCEEDED
 
-  turn timeline   . = prefix held   X = prefix broke
-       1  XXXXXXXXXXX
-
-------------------------------------------------------------------------------
   turn 1: msg_0000 -> msg_0001   at block 5 (system[0])
-    4,377 tokens rewritten at 1h write rate = 20x what a cache read would have cost
-    !! VOLATILE_TIMESTAMP: system[0] changed because it contains a timestamp,
-       which varies every request while the surrounding content is stable.
-         'message_id: msg_0000\ntimestamp: 2026-08-26T09:20:00Z'
-      -> 'message_id: msg_0001\ntimestamp: 2026-08-26T09:20:45Z'
-         fix: Move the timestamp out of the cached prefix and into the last
-              user message, after the final cache breakpoint.
-    !! MISPLACED_BREAKPOINT: The volatile content is inside the region covered
-       by the cache breakpoint. Every stable byte after it is being rewritten
-       each turn for nothing.
+    4,377 tokens rewritten at 1h write rate
+    !! VOLATILE_TIMESTAMP: system[0] changed because it contains a timestamp
+       fix: move the timestamp out of the cached prefix and after the final
+            cache breakpoint
 ```
 
-## Why this exists
+### Useful commands
 
-Prompt caching is a three-rate problem, not a token count:
+```bash
+# machine-readable report
+cachelens trace.jsonl --json
+
+# fail CI on a critical finding or cost threshold
+cachelens trace.jsonl --fail-on critical --max-wasted-usd 0.05
+
+# use Anthropic's token-count endpoint instead of the byte heuristic
+ANTHROPIC_API_KEY=sk-ant-... cachelens trace.jsonl --exact-tokens
+
+# remove prompt contents while preserving trace shape
+cachelens redact trace.jsonl -o trace.shape.jsonl.gz
+```
+
+Exact token counting is strictly opt-in. Merely having an API key in the
+environment does not turn an offline analysis into a network call.
+
+## Why cache misses can be expensive
+
+For the currently modeled Anthropic cache economics, repeated input can be
+charged at very different rates:
 
 | | rate vs. base input |
 |---|---|
@@ -53,82 +188,61 @@ Prompt caching is a three-rate problem, not a token count:
 | cache write, 5m TTL | **1.25x** |
 | cache write, 1h TTL | **2.00x** |
 
-So a broken prefix does not merely fail to save money. It costs **12.5x to 20x**
-what the same tokens would have cost as a cache read. A single stray timestamp
-in a system prompt can quietly convert a 90%-discount path into a 25%-premium
-one, and the only symptom is a hit-rate number that looks vaguely low.
+A stable token rewritten at the 5-minute write rate costs 12.5x what the same
+token would have cost as a cache read. At the 1-hour write rate, the ratio is
+20x.
 
-Finding the stray timestamp is the hard part. That is what this does.
+CacheLens does **not** charge genuinely new content as though it could have been
+a cache read. It separates stale tokens from novel tokens: stable content can
+recover the write-vs-read gap, while genuinely new content can recover only the
+write premium it never needed to pay.
+
+Rates in `cost.py` are configurable. Unknown model rates are surfaced in the
+report rather than silently treated as equally trustworthy; verify provider or
+partner pricing before quoting dollar figures externally.
 
 ## What it detects
 
 | Cause | What it means |
 |---|---|
-| `VOLATILE_TIMESTAMP` | A timestamp inside the cached prefix changes every request |
-| `OBJECT_REPR` | A Python object repr (`0x7f9a...`) leaked into a prompt, usually via an un-serialized few-shot example |
-| `UUID_INJECTION` | A per-request UUID sits before the last breakpoint |
-| `TURN_COUNTER` | A per-turn counter is embedded in stable content |
-| `SERIALIZATION_DRIFT` | Two requests are semantically identical but serialize differently (unstable dict ordering) |
-| `TOOL_REORDER` | Same tool set, different order. Tools sit at the front of the prefix, so this invalidates everything below |
-| `MISPLACED_BREAKPOINT` | Volatile bytes sit *inside* the region a breakpoint is meant to cache |
-| `BREAKPOINT_ON_VOLATILE_BLOCK` | A block that is part stable and part rewritten sits under a breakpoint. Blocks cache whole, so the stable half is re-written every turn. Structural: fires with no textual tell |
-| `TOOL_TOKENS_UNCHANGED` | Companion to `SERIALIZATION_DRIFT` on tools: the cache missed, but the provider re-renders schemas before tokenizing, so the billed content never changed and the whole rewrite is recoverable |
-| `TTL_EXPIRY` | The prefix was fine; the entry expired before reuse |
-| `BELOW_MIN_TOKENS` | The marked prefix is under the model's minimum cacheable length, so it was never cached at all |
-| `LOOKBACK_EXCEEDED` | More than 20 blocks after the last breakpoint, past the lookback window |
-| `TOO_MANY_BREAKPOINTS` | More than the 4 the API accepts |
-| `NO_BREAKPOINT` | Nothing is being cached |
-| `MODEL_SWITCH` | Model changed mid-session, invalidating the whole prefix |
+| `VOLATILE_TIMESTAMP` | A timestamp inside the cached prefix changes every request. |
+| `OBJECT_REPR` | A Python object repr such as `0x7f9a...` leaked into a prompt. |
+| `UUID_INJECTION` | A per-request UUID sits before the last breakpoint. |
+| `TURN_COUNTER` | A per-turn counter is embedded in otherwise stable content. |
+| `SERIALIZATION_DRIFT` | Semantically identical content serializes differently. |
+| `TOOL_REORDER` | The same tool set appears in a different order, invalidating the prefix below it. |
+| `MISPLACED_BREAKPOINT` | Volatile bytes sit inside the region a breakpoint is meant to cache. |
+| `BREAKPOINT_ON_VOLATILE_BLOCK` | A partly stable, partly changing block is cached whole, forcing the stable portion to be rewritten. |
+| `TOOL_TOKENS_UNCHANGED` | Tool serialization changed on the wire even though provider tokenization is unchanged. |
+| `TTL_EXPIRY` | The prefix was valid, but the cache entry expired before reuse. |
+| `BELOW_MIN_TOKENS` | The marked prefix is below the model's minimum cacheable length. |
+| `LOOKBACK_EXCEEDED` | The breakpoint is beyond the provider's lookback window. |
+| `TOO_MANY_BREAKPOINTS` | More breakpoints are present than the API accepts. |
+| `NO_BREAKPOINT` | Nothing is marked for caching. |
+| `MODEL_SWITCH` | The model changed mid-session, invalidating the prefix. |
 
-## Install
+## How it works
 
-```bash
-pip install -e ".[dev]"
-```
+1. **Canonicalize.** Flatten each request into provider wire order
+   (`tools -> system -> messages`). Each block retains both its raw
+   serialization and a canonical form.
+2. **Build rolling prefix hashes.** CacheLens hashes progressively longer raw
+   prefixes so it can find where consecutive requests stop matching.
+3. **Find the first divergence.** Normal conversation growth is not a break;
+   mutation of an existing cached prefix is.
+4. **Attribute the change.** Diff the offending block and widen tiny character
+   edits to useful surrounding context.
+5. **Classify and price.** Match structural/textual patterns, split stale from
+   novel content, and estimate the recoverable cost.
 
-## Use
+Large re-rendered blocks such as DOM state are handled with a line-first diff
+path rather than feeding the whole block to a quadratic character matcher. That
+change reduced a 30-step real-agent trace from **89.6s to 0.146s** during the
+field study.
 
-Two steps: record traffic, then profile it.
+## Capturing and sharing traces
 
-```bash
-# 1. record. point your agent's base URL at the proxy and drive it as usual
-cachelens proxy -o trace.jsonl
-#    ANTHROPIC_BASE_URL=http://127.0.0.1:8788  <your agent command>
-
-# 2. profile
-cachelens trace.jsonl --req-per-day 30
-```
-
-The proxy forwards every request upstream unchanged and needs **no credentials
-of its own** — the client's auth header passes straight through, so the key
-stays with the agent you are profiling. `--no-forward` records the shape of
-requests and returns a stub instead of calling the provider, which captures a
-trace without spending anything.
-
-```bash
-# profile a captured session
-cachelens trace.jsonl --req-per-day 30
-
-# machine-readable
-cachelens trace.jsonl --json
-
-# gate it in CI
-cachelens trace.jsonl --fail-on critical --max-wasted-usd 0.05
-
-# exact token counts instead of the byte heuristic (free endpoint, needs a key)
-ANTHROPIC_API_KEY=sk-ant-... cachelens trace.jsonl --exact-tokens
-
-# strip a trace to its shape so it can be shared in an issue
-cachelens redact trace.jsonl -o trace.shape.jsonl.gz
-```
-
-`redact` keeps block boundaries, byte lengths, `cache_control` placement and the
-real `usage` fields, and replaces every prompt string with same-length filler
-derived from a hash of the original. Token totals reproduce within ~0.1% and
-structural findings are unchanged; the textual rules have nothing left to match,
-and a finding sitting exactly on a threshold can flip.
-
-Input is JSONL, one captured request per line:
+`cachelens proxy` writes JSONL directly:
 
 ```json
 {"session_id":"s1","request_id":"msg_001","ts":1756200000.0,
@@ -136,16 +250,31 @@ Input is JSONL, one captured request per line:
  "usage":{"cache_creation_input_tokens":9531,"cache_read_input_tokens":10638}}
 ```
 
-`cachelens proxy` writes this format directly. An SDK middleware or an OTel
-exporter can produce it too. **The analysis never calls a provider**, so it runs
-offline, in CI, and against traces recorded months ago.
+An SDK middleware or OTel exporter can produce the same format. **Analysis of a
+captured trace never calls a provider** unless `--exact-tokens` is explicitly
+requested.
 
-## Try it
+The proxy also handles a capture trap that can silently erase usage data:
+provider SSE responses may be gzip-compressed when the client's
+`Accept-Encoding` is passed through. The proxy strips that header upstream and
+decompresses defensively on the way back before extracting usage counters.
 
-Two fixtures ship with the repo, modeled on a real cache bug found in a widely
-used open-source agent: per-message metadata was appended to the system prompt
-*before* the `cache_control` marker, so a ~9.5k-token stable block was rewritten
-on every single turn.
+### Redaction
+
+```bash
+cachelens redact trace.jsonl -o trace.shape.jsonl.gz
+```
+
+Redaction preserves block boundaries, byte lengths, `cache_control` placement,
+and real `usage` fields while replacing prompt strings with same-length filler
+derived from a hash of the original. Structural findings remain available;
+textual rules no longer have the original text to match.
+
+## Try the bundled reproduction
+
+Two fixtures model a real cache-busting pattern: per-message metadata appears
+inside a cached system block, forcing a large stable prefix to be rewritten on
+every turn.
 
 ```bash
 python examples/gen_fixtures.py
@@ -153,143 +282,66 @@ cachelens examples/openclaw_repro.jsonl --req-per-day 30   # 52.6% hit rate, $22
 cachelens examples/fixed.jsonl          --req-per-day 30   # 99.8% hit rate, $0.00
 ```
 
-## How it works
+## Field-study details
 
-1. **Canonicalize.** Flatten each request into wire-order blocks honoring the
-   provider's cache hierarchy (`tools -> system -> messages`). Each block keeps
-   two serializations: `raw` (what the provider hashes) and `canonical` (sorted
-   keys, for detecting semantically-null changes).
-2. **Rolling prefix hash.** `H_i = sha256(H_{i-1} || raw_i)`. Cheap, and mirrors
-   what the provider actually does.
-3. **First divergence.** Scan consecutive requests for the first index where the
-   hashes disagree. Everything after that point is a write that should have been
-   a read. A *growing* conversation is not a break, and is not reported as one.
-4. **Byte-level attribution.** Diff the offending block, merge adjacent edits,
-   and widen to line boundaries. A minimal character diff reports `'0' -> '1'`,
-   which is true and useless; the enclosing line names the bug.
-5. **Classify and price.** Match the changed spans against the rule table above,
-   then compute `lost_tokens x (write_rate - read_rate)`.
+### browser-use: stable history and volatile DOM share one block
 
-The diff peels the shared head and tail before running `SequenceMatcher`, since
-prompts are large and mostly identical. On the bundled fixtures this took the
-suite from **55.7s to 0.12s**.
+browser-use constructs a user message containing the task, accumulated agent
+history, and current page state, then puts the message-level cache breakpoint on
+that combined block. Because the live DOM changes every step, the block changes
+every step.
 
-## Relationship to Anthropic's cache diagnostics
+That creates two losses: stable history is rewritten instead of read, and new
+page state pays a cache-write premium for an entry that will not match on the
+next step. Splitting the stable task/history from volatile page state makes the
+former a growing cacheable prefix and leaves the DOM as ordinary new input.
 
-Anthropic ships a [cache diagnostics beta](https://platform.claude.com/docs/en/build-with-claude/cache-diagnostics)
-(`cache-diagnosis-2026-04-07`) that returns a `cache_miss_reason` such as
-`system_changed`. It is genuinely useful and you should turn it on. It is also:
+Measured with exact provider token counts, the recoverable share ranged from
+**23% to 51%** across the tested page-state sizes and session lengths.
 
-- **live-only** — you must pass `previous_message_id` on the request; it cannot
-  analyze traffic you already recorded
-- **level-granular** — it tells you *system changed*, not *which 40 bytes*
-- **Claude API only** — not on Bedrock or Vertex
-- **not priced** — no dollar figure, no trend, no CI gate
+### aider: mostly healthy, with repo-map churn
 
-`cachelens` is the offline half: it works from captured traffic, names the exact
-bytes and the pattern they belong to, prices the waste, and fails your build
-when a pull request makes it worse. Where diagnostics data is present in a
-trace, it is consumed as an additional signal rather than replaced.
+aider places its breakpoints so ordinary conversation growth usually happens
+outside the cached region. Its repo map is different: it is re-ranked against
+identifiers mentioned in the conversation and sits mid-prefix, so content can
+shift even when no repository file changed. CacheLens reports that tradeoff
+rather than treating the whole session as unhealthy.
 
-## Roadmap
+### gptme and SWE-agent: clean controls
 
-- [x] Prefix reconstruction, divergence detection, byte-level attribution
-- [x] Rule-based root-cause classification with fix suggestions
-- [x] Cost model and CI gate
-- [x] Field study against real open-source agents (see `examples/real-agents/`)
-- [ ] HTML context map: per-turn bands colored read / write / uncached, hover diff
-- [x] `cachelens redact` — share a trace's shape without its prompts
-- [~] Exact token counts via provider `count_tokens` (done for Anthropic via
-      `--exact-tokens`; per-level confidence reported when falling back)
-- [x] `cachelens proxy` — live capture as a first-class command
-- [ ] OpenAI and OTel GenAI ingest
-- [ ] GitHub Action + pytest plugin
+Both captured runs use a moving cache window that preserves readable prefixes
+as the conversation grows. CacheLens reported zero prefix breaks across the
+measured turns, providing a useful false-positive check for the profiler.
 
-## Field results
+### OpenClaw: public bug mechanism reproduced with live usage
 
-Run against four open-source agents at pinned commits, driving each agent's own
-prompt-assembly code rather than a fixture:
+[openclaw#75300](https://github.com/openclaw/openclaw/issues/75300) described
+volatile content inside a `cache_control`-marked system block. Live captures
+against pre-fix **v2026.4.29** reproduced that mechanism through Dynamic Project
+Context.
 
-| agent | verdict |
-|---|---|
-| **browser-use** | Task, full history and live DOM share one block, with the only message-level breakpoint on it. **23-51% of the input bill** is recoverable by splitting that block in two |
-| **aider** | Mostly well behaved. The repo map is re-ranked every turn and sits mid-prefix, invalidating the history below it on 2 of 8 turns |
-| **gptme** | Clean. Zero prefix breaks in 9 turns |
-| **SWE-agent** | Clean. Zero prefix breaks in 7 turns |
+With content below the boundary held static, the captured session reported a
+**97.0%** hit rate and zero breaks. When `HEARTBEAT.md` changed each turn, the
+hit rate fell to **44.3%** and the system cache was rewritten on every turn:
 
-The browser-use range is measured with exact provider token counts, not the
-heuristic. An earlier revision of this table said 25-55%; counting the DOM
-blocks exactly moved every cell down by 1.7-4.8 points, because serialized DOM
-is far denser than the heuristic assumes and dense novel content recovers at
-only 0.25x where stale content recovers at 1.15x. See **Calibration**.
-
-Traces, capture harnesses and the method's limits are in
-[`examples/real-agents/`](examples/real-agents/). Those four captures never
-reached a provider, so their `reported cache hit rate` reads 0.0%; every other
-figure is computed from the request bodies.
-
-### openclaw: the bug class reproduced, with real usage
-
-[openclaw#75300](https://github.com/openclaw/openclaw/issues/75300) reports an
-Anthropic prefix busted every turn by volatile content sitting inside a
-`cache_control`-marked system block. It was closed as "already implemented" by
-a bot; the reporter rebutted twice with a mitmproxy intercept and was not
-answered. We captured live traffic from pre-fix **v2026.4.29** to settle it.
-
-**The defect reaches the wire.** openclaw marks where the split should happen
-with an `<!-- OPENCLAW_CACHE_BOUNDARY -->` sentinel, and its own payload policy
-splits there. The `pi-ai` harness bundled in 2026.4.29 builds its own Anthropic
-request and never consults the marker. In our capture the marker arrives at the
-provider *inside* the single `cache_control` block, at char 27,075 of 29,237 —
-with everything openclaw itself labels "Dynamic Project Context" sitting after
-it, inside the cached region. `pi-ai` is absent from 2026.5.28, which is why
-the bug goes away there.
-
-**Two sessions, and the difference between them is the whole point.**
-
-| session | volatile content changed? | reported hit rate | breaks |
-|---|---|---|---|
-| `..._live` | no | **97.0%** | 0 of 4 |
-| `..._heartbeat` | yes (`HEARTBEAT.md`, per turn) | **44.3%** | 3 of 3 |
-
-The first is a true negative: nothing below the boundary changed, so nothing
-broke, and reporting zero breaks is correct. The second changes `HEARTBEAT.md`
-between turns — which is that file's documented purpose — and the #75300
-signature appears immediately in the genuine `usage` counters:
-
-```
-cache_read  14,457   14,457   14,457     <- tools, correctly cached, never grows
-cache_write  9,686   10,322   10,964     <- system block, re-written every turn
+```text
+cache_read   14,457   14,457   14,457   <- tools held in cache
+cache_write   9,686   10,322   10,964   <- system block rewritten
 ```
 
-Against the issue's published figures (read ~10,638 constant, write ~9,531
-every turn) the structure matches exactly: tools cached, system busted, write
-roughly constant regardless of conversation length.
+From the payload alone, CacheLens located the break at `system[0]`, raised
+`BREAKPOINT_ON_VOLATILE_BLOCK`, and estimated the rewritten token counts within
+roughly **2.5%** of the genuine provider counters.
 
-From the payload alone, cachelens located the break at `system[0]`, raised
-`BREAKPOINT_ON_VOLATILE_BLOCK`, and quoted the offending bytes — reporting that
-8,089 of ~8,098 tokens in the block were unchanged and re-written anyway. Its
-predicted rewrite lands within **-2.5%** of the real counters:
+This reproduces the **mechanism** in #75300, not the reporter's exact trigger.
+The issue described per-message metadata on the channel path; the field capture
+drove `agent --local` and triggered the same boundary failure through Dynamic
+Project Context. The original scenario remains unreproduced here.
 
-| turn | predicted | real `cache_creation` | error |
-|---|---|---|---|
-| 1 | 9,407 | 9,686 | -2.9% |
-| 2 | 10,067 | 10,322 | -2.5% |
-| 3 | 10,733 | 10,964 | -2.1% |
+## Token-count calibration
 
-**What this is and is not.** It reproduces the *mechanism* of #75300 — the
-boundary marker ignored, volatile content inside the cached block — through a
-different trigger. The originally reported trigger was per-message
-`message_id`/`timestamp` on the **channel** path; we drove `agent --local` and
-triggered it through Dynamic Project Context instead. The reporter's exact
-scenario remains unreproduced by us. The defect they described is present.
-
-Both traces are committed redacted (see below).
-
-## Calibration
-
-Token accuracy is per-level and measured, not uniform. Against
-`/v1/messages/count_tokens` on real captured agent traffic:
+The fallback character heuristic is intentionally reported with per-level
+confidence rather than presented as exact:
 
 | level | content | chars/token | heuristic error |
 |---|---|---|---|
@@ -299,69 +351,68 @@ Token accuracy is per-level and measured, not uniform. Against
 | `tools` | JSON schemas | 3.220 | **-10.55%** |
 | full payload | mixed | — | **-6.53%** |
 
-The divisor in `cost.py` is 3.600, which is why prose lands within a rounding
-error and everything denser does not. Two structural effects sit inside the
-tools figure: a fixed **~496-token preamble** charged once whenever any tool is
-present, and content that the heuristic cannot see (below).
+`--exact-tokens` replaces the heuristic with Anthropic's token-count endpoint.
+The browser-use economics above use exact provider counts.
 
-`cachelens --exact-tokens` replaces the heuristic with provider counts (the
-endpoint bills nothing; it needs `ANTHROPIC_API_KEY`). Every report prints which
-counter produced its numbers and the confidence for each level.
+### The provider does not tokenize the literal tool JSON you send
 
-**Exact counting is strictly opt-in, and the CI gate never needs a key.** A key
-merely present in the environment does not change what a run does — only the
-flag does. That is deliberate: a fork whose CI exports `ANTHROPIC_API_KEY` for
-unrelated reasons would otherwise turn a plain `cachelens trace.jsonl` in its
-pipeline into a live-call run, and inherit a red badge for a reason that appears
-nowhere in the command line. The workflow asserts this.
+Measured on the same 30 tool definitions:
 
-**Where the error lands matters.** It concentrates at the `tools` level, which
-is also the level that breaks least often — tools are stable across a session
-by construction. The bugs that actually cost money break at `system` or
-`messages` level, and those are the levels where the heuristic is measured
-rather than modelled. A -10.55% error on a block that never invalidates costs
-nothing.
-
-Rates in `cost.py` are first-party API prices per million input tokens and are
-configurable. A model with no entry is priced at the $3.00 default and the
-report says so explicitly — Bedrock and Vertex are partner-operated and priced
-separately, so override the table if you bill there.
-
-## The provider does not tokenize the JSON you send
-
-Measured, and worth stating on its own because most people guess otherwise:
-
-```
-same 30 tool definitions, compact  47,714 bytes -> 14,781 tokens
-same 30 tool definitions, pretty   81,800 bytes -> 14,781 tokens
+```text
+compact  47,714 bytes -> 14,781 tokens
+pretty   81,800 bytes -> 14,781 tokens
 ```
 
-A 71% difference in wire bytes, byte-identical token count. The provider parses
-tool definitions and re-renders them into its own internal format before
-tokenizing, so whitespace and key order in your request body cost exactly
-nothing.
+The 71% difference in wire bytes produced the same provider token count. This
+matters because billing and cache identity are related but not identical:
+provider tokenization can normalize tool definitions even though a changed wire
+serialization can still invalidate the cache prefix. CacheLens therefore treats
+serialization drift and its billing consequence as separate signals.
 
-Two consequences, which pull in opposite directions:
+## Relationship to Anthropic cache diagnostics
 
-- **Billing.** No choice of characters-per-token divisor can be correct for
-  tool definitions, because the bytes measured are not the object billed. This
-  is why the token counter is pluggable rather than tuned.
-- **Caching.** The prefix hash *is* taken over the bytes you sent. So
-  reordering keys in a tool schema invalidates the cache while changing the
-  bill not at all. `cachelens` reports these as two findings —
-  `SERIALIZATION_DRIFT` for the invalidation, `TOOL_TOKENS_UNCHANGED` to record
-  that the whole rewrite is recoverable content rather than new content.
+Anthropic's cache diagnostics beta can return a live `cache_miss_reason` such as
+`system_changed`. It is useful and complementary.
 
-## Capturing your own traffic
+CacheLens focuses on the offline side:
 
-`cachelens proxy` is the least invasive capture: point the agent's base URL at
-it and it forwards upstream. It is worth knowing what it handles for you, since
-this is the trap that produces a silently wrong trace rather than an error — if
-you pass the client's `Accept-Encoding` through, the provider may gzip the SSE
-stream, and a parser reading it as text finds no `message_start` event. The
-usage counters then come back as `0`, which looks like "caching is off" instead
-of "the capture is broken". We strip `Accept-Encoding` on the way out and
-decompress defensively on the way back. If you write your own capture, do both.
+- historical traces, not only live requests;
+- byte/block-level attribution rather than only cache level;
+- root-cause classification and fix suggestions;
+- dollar estimates, projections, and CI thresholds;
+- captured traffic from environments where the live diagnostic is unavailable.
+
+If diagnostic metadata is present in a trace, CacheLens can consume it as an
+additional signal rather than replacing it.
+
+## Limits
+
+- Four of the five field-study captures stop before a provider call and use
+  scripted assistant replies. Their request bodies and cache-control placement
+  come from the agents; their displayed provider hit-rate field is therefore
+  not meaningful. OpenClaw is the live exception.
+- browser-use page state in the field harness is synthetic and deliberately
+  varied by size; the finding depends on stable-history versus volatile-state
+  geometry, not a particular web page.
+- Short scripted sessions do not exercise every retry, error, compaction, or
+  long-session behavior found in production.
+- Pricing changes. Dollar figures depend on the configured model rate and
+  deployment channel.
+- Exact token counting is currently implemented for Anthropic; OpenAI and OTel
+  GenAI ingest are roadmap items.
+
+## Roadmap
+
+- [x] Prefix reconstruction, divergence detection, byte-level attribution
+- [x] Rule-based root-cause classification with fix suggestions
+- [x] Stale-vs-novel cost model and CI gate
+- [x] Field study against real open-source agents
+- [x] `cachelens redact` — share trace shape without prompt contents
+- [x] Anthropic exact token counts via `--exact-tokens`
+- [x] `cachelens proxy` — first-class live capture
+- [ ] HTML context map: read / write / uncached bands with hover diff
+- [ ] OpenAI and OTel GenAI ingest
+- [ ] GitHub Action + pytest plugin
 
 ## License
 
