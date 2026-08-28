@@ -106,3 +106,42 @@ def test_cli_default_path_makes_no_network_call(monkeypatch, tmp_path, capsys):
 
     assert main([str(trace), "--fail-on", "critical"]) == 0
     assert "token counts: heuristic" in capsys.readouterr().out
+
+
+def test_current_model_rates_are_present_not_defaulted():
+    """The dollar column is denominated in these; a miss is not a rounding error.
+
+    Every model here was silently priced at the $3.00 default until this was
+    checked: Fable and Mythos are $10.00, so the understatement was 3.3x.
+    """
+    from cachelens.cost import base_rate, rate_is_known
+
+    expected = {
+        "claude-fable-5": 10.00,
+        "claude-mythos-5": 10.00,
+        "claude-opus-5": 5.00,
+        "claude-opus-4-8": 5.00,
+        "claude-sonnet-5": 2.00,
+        "claude-sonnet-4-6": 3.00,
+        "claude-haiku-4-5": 1.00,
+    }
+    for model, rate in expected.items():
+        assert rate_is_known(model), f"{model} falls through to the default rate"
+        assert base_rate(model) == rate, f"{model} priced wrong"
+
+    # Dated suffixes must resolve to the same rate, not to the default.
+    assert base_rate("claude-opus-5-20260101") == 5.00
+
+
+def test_unknown_model_is_flagged_rather_than_silently_defaulted():
+    from cachelens.analyze import analyze
+    from cachelens.cost import rate_is_known
+    from tests.helpers import req
+
+    assert not rate_is_known("some-unreleased-model")
+    rep = analyze([req(i, model="some-unreleased-model") for i in range(2)])[0]
+    assert any("no published rate" in n for n in rep.notes), \
+        "a defaulted rate must be visible in the report, not swallowed"
+
+    clean = analyze([req(i, model="claude-sonnet-4-6") for i in range(2)])[0]
+    assert not clean.notes

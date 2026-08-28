@@ -31,6 +31,15 @@ than quietly edited.
 
 ### Added
 
+- `cachelens proxy` — record live traffic by sitting in front of the provider.
+  Point the agent's base URL at it and drive the agent normally. It needs no
+  credentials of its own: the client's auth header passes straight through, so
+  the key stays with the agent being profiled. `--no-forward` captures request
+  shape without calling the provider or spending anything. This closes the gap
+  that made the rest of the tool hard to actually use — the analysis was only
+  ever as good as the traffic you could capture, and capturing it was the part
+  people gave up on.
+
 - `cachelens redact` — writes a shape-only copy of a trace: block boundaries,
   byte lengths, `cache_control` placement and real `usage` survive; every
   prompt string is replaced by same-length filler derived from a hash of the
@@ -53,6 +62,12 @@ than quietly edited.
   openclaw captures with genuine `usage`. See README "Field results".
 
 ### Fixed
+
+- Pricing table was missing every current model except four. `claude-fable-5`
+  and `claude-mythos-5` ($10.00/MTok) were billed at the $3.00 default -- a
+  3.3x understatement -- along with Opus 4.6/4.7/4.8 ($5.00) and Sonnet 5
+  ($2.00). Rates added, and a model with no published rate now says so in the
+  report instead of quietly defaulting.
 
 - `get_counter()` selected the exact counter whenever `ANTHROPIC_API_KEY` was
   set, making network use implicit rather than opt-in. A plain `cachelens`

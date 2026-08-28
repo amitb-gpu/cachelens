@@ -82,6 +82,23 @@ pip install -e ".[dev]"
 
 ## Use
 
+Two steps: record traffic, then profile it.
+
+```bash
+# 1. record. point your agent's base URL at the proxy and drive it as usual
+cachelens proxy -o trace.jsonl
+#    ANTHROPIC_BASE_URL=http://127.0.0.1:8788  <your agent command>
+
+# 2. profile
+cachelens trace.jsonl --req-per-day 30
+```
+
+The proxy forwards every request upstream unchanged and needs **no credentials
+of its own** — the client's auth header passes straight through, so the key
+stays with the agent you are profiling. `--no-forward` records the shape of
+requests and returns a stub instead of calling the provider, which captures a
+trace without spending anything.
+
 ```bash
 # profile a captured session
 cachelens trace.jsonl --req-per-day 30
@@ -113,9 +130,9 @@ Input is JSONL, one captured request per line:
  "usage":{"cache_creation_input_tokens":9531,"cache_read_input_tokens":10638}}
 ```
 
-Capture it from an SDK middleware, a mitmproxy addon, or an OTel exporter.
-**The analysis never calls a provider**, so it runs offline, in CI, and against
-traces recorded months ago.
+`cachelens proxy` writes this format directly. An SDK middleware or an OTel
+exporter can produce it too. **The analysis never calls a provider**, so it runs
+offline, in CI, and against traces recorded months ago.
 
 ## Try it
 
@@ -178,7 +195,7 @@ trace, it is consumed as an additional signal rather than replaced.
 - [x] `cachelens redact` — share a trace's shape without its prompts
 - [~] Exact token counts via provider `count_tokens` (done for Anthropic via
       `--exact-tokens`; per-level confidence reported when falling back)
-- [ ] `cachelens proxy` — live capture as a first-class command
+- [x] `cachelens proxy` — live capture as a first-class command
 - [ ] OpenAI and OTel GenAI ingest
 - [ ] GitHub Action + pytest plugin
 
@@ -299,8 +316,10 @@ by construction. The bugs that actually cost money break at `system` or
 rather than modelled. A -10.55% error on a block that never invalidates costs
 nothing.
 
-Rates in `cost.py` are configurable and should be verified against current
-pricing before you quote a number to anyone.
+Rates in `cost.py` are first-party API prices per million input tokens and are
+configurable. A model with no entry is priced at the $3.00 default and the
+report says so explicitly — Bedrock and Vertex are partner-operated and priced
+separately, so override the table if you bill there.
 
 ## The provider does not tokenize the JSON you send
 
@@ -329,13 +348,14 @@ Two consequences, which pull in opposite directions:
 
 ## Capturing your own traffic
 
-A recording proxy is the least invasive capture: point the agent's base URL at
-it and forward upstream. One trap, which produces a silently wrong trace rather
-than an error — if you pass the client's `Accept-Encoding` through, the provider
-may gzip the SSE stream, and a parser reading it as text finds no `message_start`
-event. The usage counters then come back as `0`, which looks like "caching is
-off" instead of "the capture is broken". Strip `Accept-Encoding` before
-forwarding, or decompress before parsing.
+`cachelens proxy` is the least invasive capture: point the agent's base URL at
+it and it forwards upstream. It is worth knowing what it handles for you, since
+this is the trap that produces a silently wrong trace rather than an error — if
+you pass the client's `Accept-Encoding` through, the provider may gzip the SSE
+stream, and a parser reading it as text finds no `message_start` event. The
+usage counters then come back as `0`, which looks like "caching is off" instead
+of "the capture is broken". We strip `Accept-Encoding` on the way out and
+decompress defensively on the way back. If you write your own capture, do both.
 
 ## License
 

@@ -26,8 +26,16 @@ from dataclasses import dataclass
 
 from .tokens import CHARS_PER_TOKEN, HeuristicCounter, TokenCounter
 
+# USD per million input tokens, first-party API rates. Bedrock and Vertex are
+# partner-operated and priced separately; override these if you bill there.
 BASE_INPUT_USD_PER_MTOK: dict[str, float] = {
+    "claude-fable-5": 10.00,
+    "claude-mythos-5": 10.00,
     "claude-opus-5": 5.00,
+    "claude-opus-4-8": 5.00,
+    "claude-opus-4-7": 5.00,
+    "claude-opus-4-6": 5.00,
+    "claude-sonnet-5": 2.00,
     "claude-sonnet-4-6": 3.00,
     "claude-sonnet-4-5": 3.00,
     "claude-haiku-4-5": 1.00,
@@ -64,6 +72,16 @@ def _norm(model: str) -> str:
 
 def base_rate(model: str) -> float:
     return BASE_INPUT_USD_PER_MTOK.get(_norm(model), DEFAULT_BASE_RATE)
+
+
+def rate_is_known(model: str) -> bool:
+    """Whether the dollar column rests on a looked-up rate or on the default.
+
+    Worth surfacing rather than swallowing: the spread between tiers is wide
+    enough that defaulting can be off by more than 3x, and every figure this
+    tool prints is denominated in it.
+    """
+    return _norm(model) in BASE_INPUT_USD_PER_MTOK
 
 
 def min_cacheable(model: str) -> int:

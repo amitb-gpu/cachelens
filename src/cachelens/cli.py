@@ -7,8 +7,34 @@ import sys
 from .analyze import analyze
 from .ingest import load_jsonl
 from .report.terminal import render
+from .proxy import DEFAULT_UPSTREAM, serve
 from .redact import redact_trace
 from .tokens import get_counter
+
+
+def _proxy_main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="cachelens proxy",
+        description="Record live traffic by sitting in front of the provider. "
+                    "Point your agent's base URL at this process; it forwards "
+                    "every request upstream unchanged and writes a trace.",
+        epilog="It needs no credentials of its own -- the client's auth header "
+               "is passed straight through.",
+    )
+    p.add_argument("-o", "--out", default="trace.jsonl",
+                   help="trace file to append to (default: trace.jsonl)")
+    p.add_argument("--port", type=int, default=8788, help="listen port (default 8788)")
+    p.add_argument("--upstream", default=DEFAULT_UPSTREAM,
+                   help=f"provider base URL (default {DEFAULT_UPSTREAM})")
+    p.add_argument("--no-forward", dest="forward", action="store_false",
+                   help="record requests and return a stub instead of calling "
+                        "the provider; captures shape without spending")
+    p.add_argument("--session-id", default="proxy-capture",
+                   help="session_id to stamp on captured records")
+    args = p.parse_args(argv)
+    serve(args.out, port=args.port, upstream=args.upstream,
+          forward=args.forward, session_id=args.session_id)
+    return 0
 
 
 def _redact_main(argv: list[str]) -> int:
@@ -33,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "redact":
         return _redact_main(argv[1:])
+    if argv and argv[0] == "proxy":
+        return _proxy_main(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="cachelens",

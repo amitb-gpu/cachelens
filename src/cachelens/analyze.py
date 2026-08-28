@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .classify import Cause, classify
-from .cost import min_cacheable, split_stale_novel, waste_for
+from .cost import base_rate, min_cacheable, rate_is_known, split_stale_novel, waste_for
 from .tokens import HeuristicCounter, TokenCounter
 from .model import RequestRecord
 from .prefix import Divergence, cacheable_prefix_end, first_divergence
@@ -108,6 +108,13 @@ def analyze_session(
     rep.reported_hit_rate = read / total if total else 0.0
 
     floor = min_cacheable(model)
+
+    if not rate_is_known(model):
+        rep.notes.append(
+            f"no published rate for {model!r}; dollar figures use the "
+            f"${base_rate(model):.2f}/MTok default and may be wrong by several "
+            f"times. Set it in cost.BASE_INPUT_USD_PER_MTOK before quoting them."
+        )
 
     for turn, (prev, curr) in enumerate(zip(records, records[1:]), start=1):
         div = first_divergence(prev.blocks, curr.blocks)

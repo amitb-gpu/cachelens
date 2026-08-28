@@ -33,6 +33,11 @@ def render(rep: SessionReport, requests_per_day: float = 0.0, verbose: bool = Tr
             add(f"    {lvl:<9} {c.label:>7}   {c.note}")
         add("")
 
+    for note in rep.notes:
+        add(f"  !! {note}")
+    if rep.notes:
+        add("")
+
     if rep.cause_histogram:
         add("  root causes")
         for code, n in rep.cause_histogram.items():
