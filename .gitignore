@@ -8,3 +8,4 @@ examples/*.jsonl
 .env
 .env.*
 *.key
+*:Zone.Identifier

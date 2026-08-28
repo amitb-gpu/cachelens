@@ -216,7 +216,7 @@ partner pricing before quoting dollar figures externally.
 | `TOOL_TOKENS_UNCHANGED` | Tool serialization changed on the wire even though provider tokenization is unchanged. |
 | `TTL_EXPIRY` | The prefix was valid, but the cache entry expired before reuse. |
 | `BELOW_MIN_TOKENS` | The marked prefix is below the model's minimum cacheable length. |
-| `LOOKBACK_EXCEEDED` | The breakpoint is beyond the provider's lookback window. |
+| `LOOKBACK_EXCEEDED` | Too many blocks sit *after* the last breakpoint, pushing older cache entries outside the provider's lookback window. |
 | `TOO_MANY_BREAKPOINTS` | More breakpoints are present than the API accepts. |
 | `NO_BREAKPOINT` | Nothing is marked for caching. |
 | `MODEL_SWITCH` | The model changed mid-session, invalidating the prefix. |
