@@ -136,7 +136,7 @@ def test_current_model_rates_are_present_not_defaulted():
 def test_unknown_model_is_flagged_rather_than_silently_defaulted():
     from cachelens.analyze import analyze
     from cachelens.cost import rate_is_known
-    from tests.helpers import req
+    from helpers import req
 
     assert not rate_is_known("some-unreleased-model")
     rep = analyze([req(i, model="some-unreleased-model") for i in range(2)])[0]
