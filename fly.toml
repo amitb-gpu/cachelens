@@ -1,0 +1,35 @@
+# Fly.io configuration for the CacheLens WebMCP demo.
+#
+# One small always-on Machine. Judging is the reason it stays warm: a cold
+# start would otherwise land on whoever opens the link first.
+
+app = "cachelens-webmcp"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep exactly one Machine up rather than scaling to zero. The service is
+  # read-only and holds ~33 MB with every trace analysed and cached, so there
+  # is nothing to save by stopping it and a demo to lose.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    # The catalog endpoint, not "/", so the check exercises the analysis path
+    # and not just static file serving.
+    path = "/api/traces"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1

@@ -1,0 +1,25 @@
+# Keep git history and local caches out of the build context. The repo is
+# 2.1 MB, 1.8 MB of which is .git, so this roughly halves what is uploaded
+# to Fly's remote builder.
+.git
+.github
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.key
+
+# Generated example fixtures: gen_fixtures.py output is not read by `serve`,
+# which uses examples/real-agents/traces/ exclusively.
+examples/*.jsonl
+
+# Not needed at runtime.
+tests/
+examples/real-agents/harness/
+CHANGELOG.md
