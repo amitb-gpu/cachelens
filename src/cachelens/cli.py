@@ -9,7 +9,22 @@ from .ingest import load_jsonl
 from .report.terminal import render
 from .proxy import DEFAULT_UPSTREAM, serve
 from .redact import redact_trace
+from .server import serve as serve_http
 from .tokens import get_counter
+
+
+def _serve_main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="cachelens serve",
+        description="Serve the bundled traces as a read-only browser page and "
+                    "JSON API, with WebMCP tools registered for an agent.",
+    )
+    p.add_argument("--port", type=int, default=8000, help="listen port (default 8000)")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default 127.0.0.1; use 0.0.0.0 to deploy)")
+    args = p.parse_args(argv)
+    serve_http(port=args.port, host=args.host)
+    return 0
 
 
 def _proxy_main(argv: list[str]) -> int:
@@ -61,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         return _redact_main(argv[1:])
     if argv and argv[0] == "proxy":
         return _proxy_main(argv[1:])
+    if argv and argv[0] == "serve":
+        return _serve_main(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="cachelens",

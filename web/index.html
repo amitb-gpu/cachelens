@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CacheLens</title>
+<style>
+:root{
+  --ground:#F5F7F7; --panel:#fff; --sunk:#ECF0F1; --ink:#16242C; --soft:#42585F;
+  --faint:#7B8F96; --rule:#D6DFE1; --firm:#B9C7CA;
+  --read:#0E7C77; --write:#B4661B; --crit:#A83A2C;
+  --read-wash:#DCEEEC; --write-wash:#F7E9D6; --crit-wash:#F6E1DD;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --ground:#0E171D; --panel:#152229; --sunk:#101A20; --ink:#E6EDEE; --soft:#A9BCC1;
+  --faint:#7A9198; --rule:#25373F; --firm:#38505A;
+  --read:#4FC5BC; --write:#E0A45E; --crit:#E8887A;
+  --read-wash:#123430; --write-wash:#3A2A15; --crit-wash:#3B1F1B;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{max-width:1080px;margin:0 auto;padding:22px 20px 70px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;
+  border-bottom:2px solid var(--ink);padding-bottom:12px;margin-bottom:20px}
+h1{font-size:23px;margin:0;letter-spacing:-.02em}
+.tag{font-size:12px;color:var(--faint);font-family:ui-monospace,monospace}
+#mcpBadge{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;padding:4px 9px;border-radius:4px;
+  background:var(--sunk);color:var(--faint);border:1px solid var(--rule)}
+#mcpBadge.on{background:var(--read-wash);color:var(--read);border-color:var(--read)}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px}
+select{font:inherit;padding:8px 10px;border-radius:6px;border:1px solid var(--firm);
+  background:var(--panel);color:var(--ink);min-width:260px}
+.blurb{font-size:13px;color:var(--soft);margin:0 0 18px;max-width:70ch}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:8px;
+  overflow:hidden;margin-bottom:8px}
+.stat{background:var(--panel);padding:14px 16px}
+.stat .k{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  font-family:ui-monospace,monospace}
+.stat .v{font-size:27px;font-weight:700;letter-spacing:-.02em;margin-top:5px;
+  font-variant-numeric:tabular-nums}
+.v.bad{color:var(--crit)} .v.warn{color:var(--write)} .v.ok{color:var(--read)}
+.caveat{font-size:12px;color:var(--faint);margin:0 0 22px}
+h2{font-size:15px;margin:26px 0 10px;letter-spacing:.02em}
+.cause{border:1px solid var(--rule);border-left:3px solid var(--firm);
+  border-radius:6px;background:var(--panel);padding:13px 15px;margin-bottom:10px}
+.cause.critical{border-left-color:var(--crit)}
+.cause.high{border-left-color:var(--write)}
+.cause.info{border-left-color:var(--faint)}
+.cause .code{font-family:ui-monospace,monospace;font-weight:700;font-size:13px}
+.pill{font-size:10.5px;font-family:ui-monospace,monospace;padding:2px 7px;border-radius:3px;
+  background:var(--sunk);color:var(--soft);margin-left:8px}
+.cause p{margin:7px 0 0;font-size:13.5px;color:var(--soft)}
+.fix{margin-top:8px;font-size:13px;color:var(--read)}
+pre.ev{background:var(--sunk);border:1px solid var(--rule);border-radius:5px;
+  padding:9px 11px;margin:9px 0 0;overflow-x:auto;font-size:11.5px;line-height:1.5;
+  font-family:ui-monospace,monospace;color:var(--soft);white-space:pre-wrap;word-break:break-word}
+table{border-collapse:collapse;width:100%;font-size:13px;
+  font-family:ui-monospace,monospace}
+th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--rule);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);
+  border-bottom:1px solid var(--firm)}
+td.w{color:var(--write)} td.r{color:var(--read)}
+#log{position:fixed;right:16px;bottom:16px;width:330px;max-height:44vh;overflow-y:auto;
+  background:var(--panel);border:1px solid var(--firm);border-radius:8px;
+  box-shadow:0 8px 30px -12px rgba(0,0,0,.45);font-size:12px;z-index:50}
+#log h3{margin:0;padding:9px 12px;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);border-bottom:1px solid var(--rule);font-family:ui-monospace,monospace;
+  display:flex;align-items:center;gap:7px}
+#log .dot{width:7px;height:7px;border-radius:50%;background:var(--firm)}
+#log.live .dot{background:var(--read);box-shadow:0 0 0 0 var(--read);animation:pulse 1.1s ease-out}
+@keyframes pulse{0%{box-shadow:0 0 0 0 var(--read)}100%{box-shadow:0 0 0 9px transparent}}
+#logBody{padding:6px 0}
+#logBody:empty::after{content:"no tool calls yet";display:block;padding:10px 12px;color:var(--faint)}
+.entry{padding:7px 12px;border-bottom:1px solid var(--rule);font-family:ui-monospace,monospace}
+.entry:last-child{border-bottom:none}
+.entry .t{color:var(--read);font-weight:700}
+.entry .a{color:var(--faint);word-break:break-all}
+.flash{animation:flash .9s ease-out}
+@keyframes flash{0%{background:var(--read-wash)}100%{background:transparent}}
+@media(max-width:720px){#log{position:static;width:auto;max-height:none;margin-top:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>CacheLens</h1>
+    <span class="tag">prompt-cache profiler</span>
+    <span id="mcpBadge">WebMCP: checking…</span>
+  </header>
+
+  <div class="controls">
+    <label for="sel" class="tag">Trace</label>
+    <select id="sel"></select>
+  </div>
+  <p class="blurb" id="blurb"></p>
+
+  <div class="stats" id="stats"></div>
+  <p class="caveat" id="caveat"></p>
+
+  <h2>What broke the prefix</h2>
+  <div id="causes"></div>
+
+  <h2>Most expensive breaks</h2>
+  <div style="overflow-x:auto"><table id="breaks">
+    <thead><tr><th>turn</th><th>block</th><th>stale tok</th><th>new tok</th>
+    <th>wasted</th><th>if split</th></tr></thead><tbody></tbody></table></div>
+</div>
+
+<div id="log">
+  <h3><span class="dot"></span> WebMCP activity</h3>
+  <div id="logBody"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async p => { const r = await fetch(p); return { status: r.status, body: await r.json() }; };
+const usd = n => "$" + Number(n).toFixed(4);
+const num = n => Number(n).toLocaleString();
+
+let TRACES = [], current = null;
+
+/* ---- visible evidence that an agent called a tool ---------------------- */
+function logCall(tool, args, note) {
+  const box = $("#log"), body = $("#logBody");
+  const e = document.createElement("div");
+  e.className = "entry flash";
+  const a = Object.keys(args || {}).length ? JSON.stringify(args) : "{}";
+  e.innerHTML = `<span class="t">${tool}</span> <span class="a">${a}</span>` +
+                (note ? `<div class="a">${note}</div>` : "");
+  body.prepend(e);
+  box.classList.add("live");
+  setTimeout(() => box.classList.remove("live"), 1200);
+}
+
+/* ---- rendering --------------------------------------------------------- */
+function renderStats(s) {
+  const hit = s.has_provider_usage
+    ? (s.reported_hit_rate * 100).toFixed(1) + "%" : "n/a";
+  const cls = !s.has_provider_usage ? "" :
+    s.reported_hit_rate > 0.9 ? "ok" : s.reported_hit_rate > 0.6 ? "warn" : "bad";
+  const cells = [
+    ["cache hit rate", hit, cls],
+    ["avoidable breaks", `${s.avoidable_breaks} / ${s.breaks}`, s.avoidable_breaks ? "bad" : "ok"],
+    ["stale tokens rewritten", num(s.stale_tokens), s.stale_tokens ? "warn" : "ok"],
+    ["estimated waste", usd(s.wasted_usd), s.wasted_usd > 0 ? "warn" : "ok"],
+  ];
+  $("#stats").innerHTML = cells.map(([k, v, c]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  const conf = Object.entries(s.level_confidence || {})
+    .map(([lvl, c]) => `${lvl} ${c.error_pct == null ? "modelled" : (c.error_pct > 0 ? "+" : "") + c.error_pct + "%"}`)
+    .join(" · ");
+  const usage = s.has_provider_usage
+    ? "Hit rate is from real provider usage counters."
+    : "This capture never reached a provider, so there is no hit rate to report — every other figure is computed from the request bodies.";
+  $("#caveat").textContent =
+    `${usage} Token counts: ${s.token_counter} (${conf}). Dollar figures are estimates, not a bill.`;
+}
+
+function renderCauses(causes) {
+  $("#causes").innerHTML = causes.length ? causes.map(c => `
+    <div class="cause ${c.severity}">
+      <span class="code">${c.code}</span>
+      <span class="pill">${c.severity}</span>
+      <span class="pill">${c.occurrences}× · turns ${c.turns.slice(0, 6).join(", ")}${c.turns.length > 6 ? "…" : ""}</span>
+      <p>${c.detail}</p>
+      ${c.fix ? `<div class="fix">fix: ${c.fix}</div>` : ""}
+    </div>`).join("")
+    : `<div class="cause info"><p>No prefix breaks in this trace. The cached prefix held on every turn.</p></div>`;
+}
+
+function renderBreaks(breaks) {
+  const tb = $("#breaks tbody");
+  tb.innerHTML = breaks.length ? breaks.map(b => `
+    <tr>
+      <td>${b.turn}</td>
+      <td>${b.block_label ?? "—"} <span class="pill">#${b.block_index}</span></td>
+      <td class="w">${num(b.stale_tokens)}</td>
+      <td>${num(b.novel_tokens)}</td>
+      <td class="w">${usd(b.wasted_usd)}</td>
+      <td class="r">${usd(0)}</td>
+    </tr>
+    ${(() => {
+      const c = b.causes.find(x => x.evidence.length) || b.causes.find(x => x.evidence_redacted);
+      if (!c) return "";
+      const inner = c.evidence.length
+        ? c.evidence[0].replace(/</g, "&lt;")
+        : "content redacted — this trace was shared with `cachelens redact`, which "
+          + "preserves block boundaries, byte lengths and cost while removing prompt text";
+      return `<tr><td colspan="6"><pre class="ev">${inner}</pre></td></tr>`;
+    })()}
+  `).join("") : `<tr><td colspan="6">nothing to show</td></tr>`;
+}
+
+async function load(traceId, viaTool) {
+  const { body } = await api(`/api/traces/${encodeURIComponent(traceId)}/explain?limit=5`);
+  current = traceId;
+  $("#sel").value = traceId;
+  const meta = TRACES.find(t => t.trace_id === traceId);
+  $("#blurb").textContent = meta ? `${meta.agent} — ${meta.description}` : "";
+  renderStats(body.summary);
+  renderCauses(body.causes);
+  // fill the "if split" column from the estimator, per shown break
+  renderBreaks(body.representative_breaks);
+  body.representative_breaks.forEach(async (b, i) => {
+    const { body: e } = await api(`/api/traces/${encodeURIComponent(traceId)}/estimate?turn=${b.turn}`);
+    if (e && !e.error) {
+      const row = $("#breaks tbody").rows[i * 2];
+      if (row) row.cells[5].textContent = usd(e.if_split_usd);
+    }
+  });
+  if (!viaTool) return body;
+  return body;
+}
+
+/* ---- WebMCP ------------------------------------------------------------ */
+
+// The Chrome docs example returns a bare string; the spec explainer shows
+// {content:[{type:"text",text}]}. Isolated here so it is a one-line change
+// once we have confirmed which the shipping implementation accepts.
+const toolResult = text => ({ content: [{ type: "text", text }] });
+
+const budget = (s, cap = 1400) => s.length <= cap ? s : s.slice(0, cap - 1) + "…";
+
+function fmtTraces(rows) {
+  const lines = rows.map(r =>
+    `${r.trace_id} | ${r.agent} | ${r.turns} turns | ` +
+    (r.has_provider_usage ? `hit ${(r.reported_hit_rate * 100).toFixed(1)}%` : "no usage data") +
+    ` | ${r.avoidable_breaks}/${r.breaks} avoidable breaks | ${usd(r.wasted_usd)} est. waste`);
+  return budget(`${rows.length} traces available (Anthropic-format captures):\n` + lines.join("\n"));
+}
+
+function fmtExplain(b) {
+  const s = b.summary;
+  const head = `Trace ${b.trace_id} (${s.session_id}, ${s.model}, ${s.turns} turns).\n` +
+    (s.has_provider_usage
+      ? `Reported cache hit rate ${(s.reported_hit_rate * 100).toFixed(1)}% (real provider usage).`
+      : `No provider usage in this capture, so no hit rate; figures below come from the request bodies.`) +
+    `\n${s.avoidable_breaks} of ${s.breaks} prefix breaks are avoidable. ` +
+    `${num(s.stale_tokens)} stale tokens rewritten, ${num(s.novel_tokens)} genuinely new. ` +
+    `Estimated waste ${usd(s.wasted_usd)} (${s.token_counter} token counts, estimate not a bill).`;
+  const causes = b.causes.map(c =>
+    `- ${c.code} (${c.severity}), ${c.occurrences}x on turns ${c.turns.slice(0, 8).join(",")}: ${c.detail}` +
+    (c.fix ? ` FIX: ${c.fix}` : "")).join("\n");
+  const breaks = b.representative_breaks.slice(0, 2).map(br => {
+    const withEv = br.causes.find(c => c.evidence.length);
+    const wasRedacted = !withEv && br.causes.some(c => c.evidence_redacted);
+    const tail = withEv ? `\n  changed bytes: ${withEv.evidence[0]}`
+      : wasRedacted ? `\n  changed bytes: not available — trace was redacted before sharing`
+      : "";
+    return `- turn ${br.turn}, block ${br.block_index} (${br.block_label}): ` +
+      `${num(br.stale_tokens)} stale + ${num(br.novel_tokens)} new, ${usd(br.wasted_usd)} wasted` + tail;
+  }).join("\n");
+  return budget(`${head}\n\nCauses:\n${causes}\n\nMost expensive breaks (${b.breaks_shown} of ${b.breaks_total}):\n${breaks}`);
+}
+
+function fmtEstimate(e) {
+  if (e.error) return `No break at turn ${e.turn ?? "?"}. Breaks in this trace are at turns: ${(e.breaks_at_turns || []).join(", ")}.`;
+  return budget(
+    `Turn ${e.turn}, block ${e.block_index} (${e.block_label}).\n` +
+    `Currently ${usd(e.current_usd)}; if the block were split, ${usd(e.if_split_usd)}. ` +
+    `Saving ${usd(e.saving_usd)} on this turn.\n` +
+    `Assumption: ${e.assumption}\n` +
+    `Not modelled: ${e.not_modelled}\n` +
+    `Token counts are ${e.token_counter}; treat as an estimate.`);
+}
+
+async function registerTools() {
+  const badge = $("#mcpBadge");
+  if (!("modelContext" in document) || !document.modelContext?.registerTool) {
+    badge.textContent = "WebMCP: unavailable";
+    badge.title = "Enable chrome://flags/#enable-webmcp-testing, or open in an agentic browser.";
+    return;
+  }
+  const readOnly = { readOnlyHint: true, untrustedContentHint: true };
+  try {
+    await document.modelContext.registerTool({
+      name: "list_traces",
+      description: "List the captured LLM traces CacheLens can analyze, with turns, " +
+        "cache hit rate where provider usage exists, and how many prefix breaks were avoidable.",
+      inputSchema: { type: "object", properties: {} },
+      annotations: readOnly,
+      execute: async () => {
+        const { body } = await api("/api/traces");
+        logCall("list_traces", {}, `${body.count} traces`);
+        return toolResult(fmtTraces(body.traces));
+      },
+    });
+
+    await document.modelContext.registerTool({
+      name: "explain_cache_behavior",
+      description: "Explain why a trace's prompt cache is performing as it is: where the " +
+        "stable prefix broke, what caused it, the changed bytes, and the estimated cost. " +
+        "Optionally filter to one cause code.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          trace_id: { type: "string", description: "id from list_traces" },
+          cause_code: { type: "string", description: "optional, e.g. BREAKPOINT_ON_VOLATILE_BLOCK" },
+          limit: { type: "integer", description: "representative breaks to return, 1-10, default 3" },
+        },
+        required: ["trace_id"],
+      },
+      annotations: readOnly,
+      execute: async ({ trace_id, cause_code, limit }) => {
+        const q = new URLSearchParams();
+        if (cause_code) q.set("cause", cause_code);
+        if (limit) q.set("limit", String(limit));
+        const { status, body } = await api(
+          `/api/traces/${encodeURIComponent(trace_id)}/explain?${q}`);
+        logCall("explain_cache_behavior", { trace_id, cause_code, limit });
+        if (status === 404) return toolResult(
+          `Unknown trace_id ${trace_id}. Valid ids: ${(body.valid_trace_ids || []).join(", ")}.`);
+        if (TRACES.some(t => t.trace_id === trace_id)) load(trace_id, true);
+        return toolResult(fmtExplain(body));
+      },
+    });
+
+    await document.modelContext.registerTool({
+      name: "estimate_split_savings",
+      description: "For one break in a trace, estimate what that turn would have cost if the " +
+        "block had been split so its unchanged part sat before the cache breakpoint. " +
+        "Narrow arithmetic on measured stale-vs-new tokens; it does not simulate arbitrary " +
+        "prompt reorganization or predict a cache hit rate.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          trace_id: { type: "string", description: "id from list_traces" },
+          turn: { type: "integer", description: "turn number of the break" },
+        },
+        required: ["trace_id", "turn"],
+      },
+      annotations: readOnly,
+      execute: async ({ trace_id, turn }) => {
+        const { status, body } = await api(
+          `/api/traces/${encodeURIComponent(trace_id)}/estimate?turn=${encodeURIComponent(turn)}`);
+        logCall("estimate_split_savings", { trace_id, turn });
+        if (status === 404 && body.error === "unknown_trace_id") return toolResult(
+          `Unknown trace_id ${trace_id}. Valid ids: ${(body.valid_trace_ids || []).join(", ")}.`);
+        return toolResult(fmtEstimate(body));
+      },
+    });
+
+    badge.textContent = "WebMCP: 3 tools registered";
+    badge.classList.add("on");
+  } catch (err) {
+    badge.textContent = "WebMCP: registration failed";
+    badge.title = String(err);
+  }
+}
+
+/* ---- boot -------------------------------------------------------------- */
+(async function () {
+  const { body } = await api("/api/traces");
+  TRACES = body.traces;
+  $("#sel").innerHTML = TRACES.map(t =>
+    `<option value="${t.trace_id}">${t.agent} — ${t.trace_id}</option>`).join("");
+  $("#sel").addEventListener("change", e => load(e.target.value));
+  const first = TRACES.find(t => t.trace_id === "openclaw-heartbeat") || TRACES[0];
+  if (first) await load(first.trace_id);
+  registerTools();
+})();
+</script>
+</body>
+</html>

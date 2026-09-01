@@ -177,6 +177,36 @@ cachelens redact trace.jsonl -o trace.shape.jsonl.gz
 Exact token counting is strictly opt-in. Merely having an API key in the
 environment does not turn an offline analysis into a network call.
 
+## Browser and WebMCP surface
+
+`cachelens serve` runs a read-only page and JSON API over the bundled traces,
+and registers three [WebMCP](https://developer.chrome.com/docs/ai/webmcp) tools
+so an agent in the browser can ask about a cache problem directly.
+
+```bash
+cachelens serve                 # http://127.0.0.1:8000
+```
+
+| Tool | Answers |
+|---|---|
+| `list_traces` | What can I look at? |
+| `explain_cache_behavior` | Why is this trace's hit rate low, where did the prefix break, what caused it, what did it cost? |
+| `estimate_split_savings` | What would this one turn have cost if that block had been split? |
+
+All three are read-only (`readOnlyHint: true`). A `trace_id` resolves through an
+explicit server-side catalog and is never a filesystem path, so no input from a
+page or an agent can reach an arbitrary file. Tool output is budgeted to roughly
+1.5K characters, so `explain_cache_behavior` groups causes and returns a few
+representative breaks rather than dumping all of them.
+
+`estimate_split_savings` is narrow on purpose. It answers one question about one
+break -- if this block's unchanged part sat before the cache breakpoint, what
+would this turn have cost? -- using the stale/novel split the analyzer already
+computes. It does not simulate arbitrary prompt reorganization and does not
+predict a cache-hit rate.
+
+To test locally, enable `chrome://flags/#enable-webmcp-testing` and reload.
+
 ## Why cache misses can be expensive
 
 For the currently modeled Anthropic cache economics, repeated input can be
