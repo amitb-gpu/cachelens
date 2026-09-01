@@ -220,10 +220,19 @@ async function load(traceId, viaTool) {
 
 /* ---- WebMCP ------------------------------------------------------------ */
 
-// The Chrome docs example returns a bare string; the spec explainer shows
-// {content:[{type:"text",text}]}. Isolated here so it is a one-line change
-// once we have confirmed which the shipping implementation accepts.
-const toolResult = text => ({ content: [{ type: "text", text }] });
+// Chrome's shipping imperative API resolves executeTool() to a *string*.
+// Returning the spec explainer's {content:[{type:"text",text}]} shape made
+// Chrome serialize the wrapper itself, so an agent received
+//   {"content":[{"type":"text","text":"Trace openclaw-heartbeat…
+// -- JSON scaffolding wrapped around the answer instead of the answer.
+// Verified in Chrome 2026-09 with chrome://flags/#enable-webmcp-testing.
+//
+// The spec explainer still documents the content-block shape, so this stays
+// a switch rather than a deletion: flip MCP_CONTENT_BLOCKS to true if a host
+// turns up that wants the structured form.
+const MCP_CONTENT_BLOCKS = false;
+const toolResult = text =>
+  MCP_CONTENT_BLOCKS ? { content: [{ type: "text", text }] } : text;
 
 const budget = (s, cap = 1400) => s.length <= cap ? s : s.slice(0, cap - 1) + "…";
 
